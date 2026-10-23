@@ -134,4 +134,41 @@ object Tmdb {
         runtimeCache[ck] = out
         return out
     }
+
+    private val discoverCache = ConcurrentHashMap<String, List<MetaPreview>>()
+
+    /**
+     * TMDB's discover search (genres, years, ratings, runtime…) for movies or
+     * series, returned with IMDb ids so your addons can play them.
+     * [query] is the URL query, e.g. "with_genres=878,53&vote_count.gte=500".
+     */
+    suspend fun discover(key: String, type: String, query: String, limit: Int = 40): List<MetaPreview> {
+        val ck = "$type?$query"
+        discoverCache[ck]?.let { return it }
+        val path = "/discover/${tmdbType(type)}?$query"
+        val pages = coroutineScope { (1..2).map { pg -> async { get(key, "$path&page=$pg") } }.awaitAll() }
+        val results = pages.filterNotNull().flatMap { it.arr("results")?.mapNotNull { r -> r as? JsonObject }.orEmpty() }
+            .take(limit)
+        val metas = coroutineScope {
+            results.map { o ->
+                async {
+                    val tid = o.long("id")?.toInt() ?: return@async null
+                    val imdb = imdbFor(key, type, tid) ?: return@async null
+                    val date = o.str("release_date") ?: o.str("first_air_date")
+                    MetaPreview(
+                        id = imdb,
+                        type = type,
+                        name = o.str("title") ?: o.str("name").orEmpty(),
+                        poster = o.str("poster_path")?.let { "$IMG/w342$it" },
+                        background = o.str("backdrop_path")?.let { "$IMG/w1280$it" },
+                        description = o.str("overview"),
+                        releaseInfo = date?.take(4),
+                        imdbRating = o.double("vote_average")?.let { String.format(Locale.US, "%.1f", it) },
+                    )
+                }
+            }.awaitAll().filterNotNull()
+        }
+        if (metas.isNotEmpty()) discoverCache[ck] = metas
+        return metas
+    }
 }

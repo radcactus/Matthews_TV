@@ -53,9 +53,11 @@ object Repo {
     const val SLOT_PICKS = 10
     const val SLOT_BECAUSE = 20      // 20..29
     const val SLOT_GENRE = 40        // 40..59
-    private const val SLOT_CATALOGS = 100
-    private const val SLOT_WATCHED = 9_000
-    private const val SLOT_LIBRARY = 10_000
+    const val SLOT_BLENDS = 60       // 60..79, themed rows (see Blends)
+    private const val SLOT_WATCHED = 90
+    private const val SLOT_LIBRARY = 95
+    // Your Stremio addons' catalogs come after all of your own rows.
+    private const val SLOT_CATALOGS = 1_000
 
     /** Rows that may repeat titles shown elsewhere (they're your own lists). */
     private val exemptFromDedupe = setOf("continue", "library", "watched")
@@ -259,7 +261,7 @@ object Repo {
 
     private suspend fun loadHome() = coroutineScope {
         // Clear catalog slots that may no longer exist (hidden, uninstalled).
-        homeSlots.keys.filter { it in SLOT_CATALOGS until SLOT_LIBRARY }.forEach { homeSlots.remove(it) }
+        homeSlots.keys.filter { it >= SLOT_CATALOGS }.forEach { homeSlots.remove(it) }
         putHomeRow(SLOT_CONTINUE, continueWatching())
 
         val jobs = mutableListOf<Job>()

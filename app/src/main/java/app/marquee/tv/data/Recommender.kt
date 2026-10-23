@@ -34,6 +34,7 @@ object Recommender {
         if (seeds.isEmpty()) {
             Repo.putHomeRow(Repo.SLOT_PICKS, null)
             Repo.clearSlots(Repo.SLOT_BECAUSE, Repo.SLOT_GENRE + 20)
+            Blends.build(emptyMap())
             return@coroutineScope
         }
         val exclude = Repo.watchedIds()
@@ -77,6 +78,9 @@ object Recommender {
             val t = r.second ?: return@forEach
             add(t.type, t.genres, when (r.first) { Rating.UP -> 2.0; Rating.MEH -> 0.3; Rating.DOWN -> -1.5 })
         }
+
+        // Themed rows ("Mind-Bending Sci-Fi Thrillers" and friends) run alongside.
+        launch { runCatching { Blends.build(taste) } }
 
         val cinemeta = Repo.cinemeta
         val picks = mutableListOf<Pair<MetaPreview, Double>>()
