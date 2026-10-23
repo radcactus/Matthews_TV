@@ -23,10 +23,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -90,11 +93,22 @@ fun DetailScreen(seed: MetaPreview, onOpen: (MetaPreview) -> Unit) {
 
     val playFocus = remember { FocusRequester() }
     val episodeFocus = remember(id) { mutableMapOf<String, FocusRequester>() }
+    // The episode you last picked (null = the Play button). Focus goes back
+    // there when the streams list closes and when you come back from the player.
     var returnFocusTo by remember { mutableStateOf<String?>(null) }
+    var restoreFocus by remember { mutableIntStateOf(1) }
 
-    LaunchedEffect(id) {
-        delay(80)
-        runCatching { playFocus.requestFocus() }
+    LaunchedEffect(restoreFocus, target == null) {
+        if (target != null || restoreFocus == 0) return@LaunchedEffect
+        delay(120)   // let the streams list leave the screen first
+        val ep = returnFocusTo?.let { episodeFocus[it] }
+        val ok = ep != null && runCatching { ep.requestFocus() }.isSuccess
+        if (!ok) runCatching { playFocus.requestFocus() }
+    }
+
+    // Returning from the player: put focus back on this page.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        if (target == null) restoreFocus++
     }
 
     fun targetFor(video: Video?): PlayTarget {
@@ -243,8 +257,7 @@ fun DetailScreen(seed: MetaPreview, onOpen: (MetaPreview) -> Unit) {
                 target = t,
                 onDismiss = {
                     target = null
-                    val back = returnFocusTo?.let { episodeFocus[it] } ?: playFocus
-                    runCatching { back.requestFocus() }
+                    restoreFocus++
                 },
             )
         }

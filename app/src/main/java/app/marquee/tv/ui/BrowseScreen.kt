@@ -53,11 +53,14 @@ fun BrowseScreen(onOpen: (MetaPreview) -> Unit) {
     var genre by rememberSaveable(type, sourceIndex) { mutableStateOf<String?>(null) }
     val effectiveGenre = genre ?: if (genreRequired) genres.firstOrNull() else null
 
-    val items = remember(type, sourceIndex, effectiveGenre) { mutableStateListOf<MetaPreview>() }
-    var exhausted by remember(type, sourceIndex, effectiveGenre) { mutableStateOf(false) }
+    // Kept outside the screen so opening a title and pressing Back returns to
+    // the same results and scroll position instead of reloading from the top.
+    val session = remember(type, sourceIndex, effectiveGenre) { BrowseMemory.get("$type|$sourceIndex|$effectiveGenre") }
+    val items = session.items
+    var exhausted by session.exhausted
     var loadingMore by remember(type, sourceIndex, effectiveGenre) { mutableStateOf(false) }
     var page by remember(type, sourceIndex, effectiveGenre) { mutableStateOf(0) }
-    val grid = remember(type, sourceIndex, effectiveGenre) { LazyGridState() }
+    val grid = session.grid
     val nearEnd by remember(grid) {
         derivedStateOf {
             val last = grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
@@ -68,6 +71,7 @@ fun BrowseScreen(onOpen: (MetaPreview) -> Unit) {
     LaunchedEffect(type, sourceIndex, effectiveGenre, page) {
         val (addon, cat) = source ?: return@LaunchedEffect
         if (exhausted) return@LaunchedEffect
+        if (page == 0 && items.isNotEmpty()) return@LaunchedEffect   // restored from BrowseMemory
         loadingMore = true
         val extra = buildMap {
             effectiveGenre?.let { put("genre", it) }
@@ -129,5 +133,23 @@ fun BrowseScreen(onOpen: (MetaPreview) -> Unit) {
                 }
             }
         }
+    }
+}
+
+private class BrowseSession {
+    val items = mutableStateListOf<MetaPreview>()
+    val exhausted = mutableStateOf(false)
+    val grid = LazyGridState()
+}
+
+/** Remembers the last Browse results while a title page is open on top. */
+private object BrowseMemory {
+    private var key: String? = null
+    private var session: BrowseSession? = null
+
+    fun get(k: String): BrowseSession {
+        val existing = session
+        if (k == key && existing != null) return existing
+        return BrowseSession().also { key = k; session = it }
     }
 }

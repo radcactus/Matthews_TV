@@ -32,12 +32,13 @@ import kotlinx.coroutines.delay
 @Composable
 fun SearchScreen(onOpen: (MetaPreview) -> Unit) {
     var query by rememberSaveable { mutableStateOf("") }
-    val rows = remember { mutableStateListOf<HomeRow>() }
+    // Results live outside the screen so Back from a title doesn't search again.
+    val rows = SearchMemory.rows
     var searching by remember { mutableStateOf(false) }
-    var searched by remember { mutableStateOf("") }
+    var searched by SearchMemory.searched
     val field = remember { FocusRequester() }
 
-    LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
+    LaunchedEffect(Unit) { if (rows.isEmpty()) runCatching { field.requestFocus() } }
 
     LaunchedEffect(query) {
         val q = query.trim()
@@ -81,4 +82,9 @@ fun SearchScreen(onOpen: (MetaPreview) -> Unit) {
             }
         }
     }
+}
+
+private object SearchMemory {
+    val rows = mutableStateListOf<HomeRow>()
+    val searched = mutableStateOf("")
 }

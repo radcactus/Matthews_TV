@@ -29,6 +29,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -89,17 +90,26 @@ fun MarqueeApp() {
     BackHandler(enabled = layers.isEmpty() && tab != Tab.Home) { tab = Tab.Home }
     BackHandler(enabled = layers.isNotEmpty()) { pop() }
 
+    // While a page is open on top, the tab underneath is taken out of the
+    // screen entirely so the remote can't wander into it. Its scroll position
+    // and filters are saved and come back when you press Back.
+    val saved = rememberSaveableStateHolder()
+
     Box(Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxSize().padding(start = RailCollapsed)) {
-            when (tab) {
-                Tab.Home -> HomeScreen(onOpen = ::open, overlayOpen = layers.isNotEmpty())
-                Tab.Browse -> BrowseScreen(onOpen = ::open)
-                Tab.Search -> SearchScreen(onOpen = ::open)
-                Tab.Library -> LibraryScreen(onOpen = ::open)
-                Tab.Settings -> SettingsScreen(onSignIn = { layers.add(Layer.Login) })
+        if (layers.isEmpty()) {
+            saved.SaveableStateProvider(tab.name) {
+                Box(Modifier.fillMaxSize().padding(start = RailCollapsed)) {
+                    when (tab) {
+                        Tab.Home -> HomeScreen(onOpen = ::open, overlayOpen = false)
+                        Tab.Browse -> BrowseScreen(onOpen = ::open)
+                        Tab.Search -> SearchScreen(onOpen = ::open)
+                        Tab.Library -> LibraryScreen(onOpen = ::open)
+                        Tab.Settings -> SettingsScreen(onSignIn = { layers.add(Layer.Login) })
+                    }
+                }
             }
+            NavRail(current = tab, onSelect = { tab = it })
         }
-        NavRail(current = tab, onSelect = { tab = it })
 
         when (val top = layers.lastOrNull()) {
             is Layer.Detail -> FocusTrap(Modifier.fillMaxSize()) {
