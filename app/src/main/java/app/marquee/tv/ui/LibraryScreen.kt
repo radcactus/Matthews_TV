@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import app.marquee.tv.data.MetaPreview
 import app.marquee.tv.data.Repo
 import app.marquee.tv.data.RowItem
+import app.marquee.tv.data.WatchStore
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -31,16 +32,23 @@ fun LibraryScreen(onOpen: (MetaPreview) -> Unit) {
     var filter by rememberSaveable { mutableStateOf("all") }
     var sort by rememberSaveable { mutableStateOf("recent") }
 
-    val items = remember(library, filter, sort) {
-        library.filter { it.inLibrary && (filter == "all" || it.type == filter) }
-            .distinctBy { it.id }
-            .let { list ->
-                when (sort) {
-                    "az" -> list.sortedBy { it.name.lowercase() }
-                    "watched" -> list.sortedByDescending { it.lastWatched }
-                    else -> list.sortedByDescending { it.mtime }
+    val watchVersion = WatchStore.version
+    val items: List<MetaPreview> = remember(library, filter, sort, watchVersion) {
+        if (filter == "done") {
+            // Everything you've fully watched, best rated first.
+            WatchStore.watchedTitles().let { list -> if (sort == "az") list.sortedBy { it.name.lowercase() } else list }
+        } else {
+            library.filter { it.inLibrary && (filter == "all" || it.type == filter) }
+                .distinctBy { it.id }
+                .let { list ->
+                    when (sort) {
+                        "az" -> list.sortedBy { it.name.lowercase() }
+                        "watched" -> list.sortedByDescending { it.lastWatched }
+                        else -> list.sortedByDescending { it.mtime }
+                    }
                 }
-            }
+                .map { it.preview() }
+        }
     }
 
     Column(Modifier.fillMaxSize().padding(top = 24.dp)) {
@@ -48,12 +56,13 @@ fun LibraryScreen(onOpen: (MetaPreview) -> Unit) {
             Pill("All", filter == "all", { filter = "all" }, Modifier.padding(start = 40.dp))
             Pill("Movies", filter == "movie", { filter = "movie" })
             Pill("Series", filter == "series", { filter = "series" })
+            Pill("Watched", filter == "done", { filter = "done" })
             Pill("Recently added", sort == "recent", { sort = "recent" }, Modifier.padding(start = 24.dp))
             Pill("Recently watched", sort == "watched", { sort = "watched" })
             Pill("A–Z", sort == "az", { sort = "az" })
         }
         when {
-            !signedIn -> Centered("Sign in with your Stremio account in Settings to see your library.")
+            !signedIn && filter != "done" -> Centered("Sign in with your Stremio account in Settings to see your library.")
             items.isEmpty() -> Centered("Nothing here yet.")
             else -> LazyVerticalGrid(
                 columns = GridCells.Adaptive(PosterWidth + 14.dp),
@@ -62,11 +71,11 @@ fun LibraryScreen(onOpen: (MetaPreview) -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(18.dp),
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                items(items, key = { it.id }) { li ->
+                items(items, key = { it.id }) { mp ->
                     PosterCard(
-                        item = RowItem(li.preview()),
-                        focusKey = "lib/${li.id}",
-                        onClick = { onOpen(li.preview()) },
+                        item = RowItem(mp),
+                        focusKey = "lib/${mp.id}",
+                        onClick = { onOpen(mp) },
                     )
                 }
             }

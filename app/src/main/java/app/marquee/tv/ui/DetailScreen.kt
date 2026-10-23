@@ -57,6 +57,9 @@ import app.marquee.tv.data.Recommender
 import app.marquee.tv.data.Repo
 import app.marquee.tv.data.RowItem
 import app.marquee.tv.data.Video
+import app.marquee.tv.data.Rating
+import app.marquee.tv.data.Tmdb
+import app.marquee.tv.data.WatchStore
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 
@@ -76,6 +79,7 @@ fun DetailScreen(seed: MetaPreview, onOpen: (MetaPreview) -> Unit) {
     LaunchedEffect(id) {
         meta = Repo.meta(type, id)
         failed = meta == null
+        meta?.let { if (it.episodes.isNotEmpty()) WatchStore.setSeriesTotal(it) }
     }
     LaunchedEffect(meta) {
         meta?.let { more = runCatching { Recommender.moreLike(it) }.getOrDefault(emptyList()) }
@@ -90,8 +94,25 @@ fun DetailScreen(seed: MetaPreview, onOpen: (MetaPreview) -> Unit) {
         mutableStateOf(resumeEpisode?.season ?: seasons.firstOrNull { it != 0 } ?: seasons.firstOrNull())
     }
     var target by remember { mutableStateOf<PlayTarget?>(null) }
+    var rating by remember { mutableStateOf(false) }      // rating screen open
+    var rateClosed by remember { mutableIntStateOf(0) }
+    @Suppress("UNUSED_VARIABLE") val watchVersion = WatchStore.version
+    val myRating = WatchStore.rating(id)
+    val fullyWatched = WatchStore.isWatched(id, type)
+
+    // Runtimes: TMDB per episode / movie when a key is set, else what the addon says.
+    var runtimes by remember(id) { mutableStateOf<Map<String, Int>>(emptyMap()) }
+    LaunchedEffect(m, season) {
+        val key = Repo.prefs.tmdbKey ?: return@LaunchedEffect
+        if (m == null || !id.startsWith("tt")) return@LaunchedEffect
+        val r = runCatching { Tmdb.runtimes(key, type, id, if (isSeries) season else null) }.getOrDefault(emptyMap())
+        if (r.isNotEmpty()) runtimes = runtimes + r
+    }
+    val titleRuntime = if (isSeries) m?.let { runtimeLabel(it) } else
+        (runtimes[id]?.let { minutesLabel(it) } ?: m?.let { runtimeLabel(it) })
 
     val playFocus = remember { FocusRequester() }
+    val rateFocus = remember { FocusRequester() }
     val episodeFocus = remember(id) { mutableMapOf<String, FocusRequester>() }
     // The episode you last picked (null = the Play button). Focus goes back
     // there when the streams list closes and when you come back from the player.
@@ -158,15 +179,22 @@ fun DetailScreen(seed: MetaPreview, onOpen: (MetaPreview) -> Unit) {
                     )
                     val facts = listOfNotNull(
                         m?.releaseInfo ?: m?.year,
-                        m?.runtime,
+                        titleRuntime?.let { if (isSeries) "$it episodes" else it },
                         m?.imdbRating?.takeIf { it.isNotBlank() }?.let { "★ $it IMDb" },
                         if (isSeries) "${seasons.count { it != 0 }} seasons" else null,
                     )
                     if (facts.isNotEmpty()) {
                         Text(facts.joinToString("   "), color = TextDim, fontSize = 15.sp, modifier = Modifier.padding(top = 8.dp))
                     }
-                    m?.allGenres?.takeIf { it.isNotEmpty() }?.let {
-                        Text(it.joinToString(" · "), color = Accent, fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp))
+                    Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        m?.allGenres?.takeIf { it.isNotEmpty() }?.let {
+                            Text(it.joinToString(" · "), color = Accent, fontSize = 14.sp, modifier = Modifier.padding(end = 14.dp))
+                        }
+                        myRating?.let { r ->
+                            RatingIcon(r, Modifier.size(16.dp), tint = ratingColor(r))
+                            Text("You: ${r.label}", color = ratingColor(r), fontSize = 14.sp, modifier = Modifier.padding(start = 6.dp, end = 12.dp))
+                        }
+                        if (fullyWatched) WatchedTag()
                     }
                     Text(
                         m?.description ?: seed.description ?: if (failed) "Couldn't load details for this title." else "",
@@ -199,6 +227,19 @@ fun DetailScreen(seed: MetaPreview, onOpen: (MetaPreview) -> Unit) {
                             leading = { Icon(Icons.Filled.PlayArrow, contentDescription = null) },
                         )
                         ActionButton(
+                            text = when {
+                                myRating != null -> "Your rating"
+                                fullyWatched -> "Rate it"
+                                else -> "Already watched"
+                            },
+                            onClick = { rating = true },
+                            modifier = Modifier.focusRequester(rateFocus),
+                            leading = {
+                                if (myRating != null) RatingIcon(myRating, Modifier.size(18.dp))
+                                else Icon(Icons.Filled.Check, contentDescription = null)
+                            },
+                        )
+                        ActionButton(
                             text = "Open in Stremio",
                             onClick = { Playback.openInStremio(ctx, type, id, primaryVideo?.id) },
                         )
@@ -221,6 +262,14 @@ fun DetailScreen(seed: MetaPreview, onOpen: (MetaPreview) -> Unit) {
             }
 
             if (isSeries) {
+                item(key = "ep-hint") {
+                    Text(
+                        "Long-press an episode to mark it watched or unwatched.",
+                        color = TextFaint,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(start = 52.dp, bottom = 4.dp),
+                    )
+                }
                 items(episodes.filter { it.season == season }, key = { "ep/${it.id}" }) { ep ->
                     val req = episodeFocus.getOrPut(ep.id) { FocusRequester() }
                     EpisodeRow(
@@ -230,6 +279,14 @@ fun DetailScreen(seed: MetaPreview, onOpen: (MetaPreview) -> Unit) {
                                 ?: library.firstOrNull { it.id == id }?.takeIf { it.duration > 0 }?.let { it.timeOffset.toFloat() / it.duration }
                         } else null,
                         isNext = resume.first == ep.id,
+                        watched = WatchStore.episodeWatched(id, ep.id),
+                        runtime = runtimes[ep.id]?.let { minutesLabel(it) } ?: ep.runtimeMinutes()?.let { minutesLabel(it) }
+                            ?: m?.let { runtimeLabel(it) },
+                        onLongClick = {
+                            val now = !WatchStore.episodeWatched(id, ep.id)
+                            WatchStore.setEpisodeWatched(id, ep.id, now, (m?.toPreview() ?: seed))
+                            Repo.refreshPersonalRows()
+                        },
                         modifier = Modifier.focusRequester(req),
                         onClick = {
                             returnFocusTo = ep.id
@@ -252,6 +309,31 @@ fun DetailScreen(seed: MetaPreview, onOpen: (MetaPreview) -> Unit) {
             }
         }
 
+        if (rating) {
+            RatingScreen(
+                title = m?.name ?: seed.name,
+                isSeries = isSeries || type == "series",
+                current = myRating,
+                watched = fullyWatched,
+                onRate = { r ->
+                    WatchStore.rate(m?.toPreview() ?: seed, r, m?.allGenres ?: seed.allGenres)
+                    Repo.refreshPersonalRows()
+                    rating = false
+                    rateClosed++
+                },
+                onUnwatch = {
+                    WatchStore.markUnwatched(id)
+                    Repo.refreshPersonalRows()
+                    rating = false
+                    rateClosed++
+                },
+                onDismiss = { rating = false; rateClosed++ },
+            )
+        }
+        LaunchedEffect(rateClosed) {
+            if (rateClosed > 0) { delay(80); runCatching { rateFocus.requestFocus() } }
+        }
+
         target?.let { t ->
             StreamsPanel(
                 target = t,
@@ -269,11 +351,15 @@ private fun EpisodeRow(
     ep: Video,
     progress: Float?,
     isNext: Boolean,
+    watched: Boolean,
+    runtime: String?,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
         onClick = onClick,
+        onLongClick = onLongClick,
         modifier = modifier
             .padding(horizontal = 48.dp, vertical = 5.dp)
             .fillMaxWidth(0.78f),
@@ -302,6 +388,7 @@ private fun EpisodeRow(
                         Box(Modifier.fillMaxWidth(p.coerceIn(0.02f, 1f)).height(4.dp).background(Accent))
                     }
                 }
+                if (watched) WatchedTag(Modifier.align(Alignment.TopStart).padding(5.dp))
             }
             Column(Modifier.padding(start = 16.dp).weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -321,8 +408,9 @@ private fun EpisodeRow(
                 (ep.overview ?: ep.description)?.let {
                     Text(it, color = TextDim, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
                 }
-                ep.released?.take(10)?.let {
-                    Text(it, color = TextFaint, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+                val facts = listOfNotNull(runtime, ep.released?.take(10))
+                if (facts.isNotEmpty()) {
+                    Text(facts.joinToString("  ·  "), color = TextFaint, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
                 }
             }
         }
@@ -334,4 +422,73 @@ fun formatTime(ms: Long): String {
     val h = s / 3600
     val m = (s % 3600) / 60
     return if (h > 0) "${h}h ${m}m" else "${m}m"
+}
+
+/** "1h 52m" or "45m" from minutes. */
+fun minutesLabel(min: Int): String = if (min >= 60) "${min / 60}h ${min % 60}m" else "${min}m"
+
+/** Parses an addon runtime string ("142 min", "2h 22min", "45") into minutes. */
+fun parseRuntime(s: String?): Int? {
+    if (s.isNullOrBlank()) return null
+    val t = s.lowercase()
+    val h = Regex("""(\d+)\s*h""").find(t)?.groupValues?.get(1)?.toIntOrNull()
+    val m = Regex("""(\d+)\s*m""").find(t)?.groupValues?.get(1)?.toIntOrNull()
+    if (h != null || m != null) return (h ?: 0) * 60 + (m ?: 0)
+    return Regex("""\d+""").find(t)?.value?.toIntOrNull()
+}
+
+fun runtimeLabel(m: MetaDetail): String? = parseRuntime(m.runtime)?.takeIf { it > 0 }?.let { minutesLabel(it) }
+
+fun Video.runtimeMinutes(): Int? = parseRuntime(runtime)
+
+/** The "Already watched" screen: rate it, which also marks it watched. */
+@Composable
+private fun RatingScreen(
+    title: String,
+    isSeries: Boolean,
+    current: Rating?,
+    watched: Boolean,
+    onRate: (Rating) -> Unit,
+    onUnwatch: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val first = remember { FocusRequester() }
+    androidx.activity.compose.BackHandler { onDismiss() }
+    LaunchedEffect(Unit) { delay(60); runCatching { first.requestFocus() } }
+    FocusTrap(Modifier.fillMaxSize().background(Color(0xCC000000))) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(
+                Modifier
+                    .width(520.dp)
+                    .background(Panel, RoundedCornerShape(16.dp))
+                    .padding(32.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Text("How was $title?", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, maxLines = 2)
+                Text(
+                    if (isSeries) "Rating it marks the whole series as watched and tunes your recommendations."
+                    else "Rating it marks it as watched and tunes your recommendations.",
+                    color = TextDim,
+                    fontSize = 13.sp,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Rating.entries.forEach { r ->
+                        ActionButton(
+                            r.label,
+                            primary = r == current,
+                            onClick = { onRate(r) },
+                            modifier = if (r == (current ?: Rating.UP)) Modifier.focusRequester(first) else Modifier,
+                            leading = { RatingIcon(r, Modifier.size(20.dp)) },
+                        )
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 6.dp)) {
+                    if (current != null || watched) {
+                        ActionButton("Mark as not watched", onClick = onUnwatch)
+                    }
+                    ActionButton("Cancel", onClick = onDismiss)
+                }
+            }
+        }
+    }
 }

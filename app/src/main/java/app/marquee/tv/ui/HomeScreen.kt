@@ -36,6 +36,7 @@ fun HomeScreen(onOpen: (MetaPreview) -> Unit, overlayOpen: Boolean) {
     val error by Repo.error.collectAsState()
     var focused by remember { mutableStateOf<MetaPreview?>(null) }
     var hero by remember { mutableStateOf<MetaPreview?>(null) }
+    var heroRuntime by remember { mutableStateOf<String?>(null) }
     var initialFocusDone by rememberSaveable { mutableStateOf(false) }
 
     // Wait for the D-pad to settle before swapping artwork.
@@ -43,9 +44,11 @@ fun HomeScreen(onOpen: (MetaPreview) -> Unit, overlayOpen: Boolean) {
         delay(220)
         val f = focused ?: return@LaunchedEffect
         hero = f
-        // Library and history items arrive without synopsis; fill it in.
-        if (f.description == null) {
-            Repo.meta(f.type, f.id)?.let { hero = it.toPreview().copy(poster = f.poster ?: it.poster) }
+        heroRuntime = null
+        // Fill in synopsis (library and history items arrive without one) and runtime.
+        Repo.meta(f.type, f.id)?.let { m ->
+            if (f.description == null) hero = m.toPreview().copy(poster = f.poster ?: m.poster)
+            heroRuntime = runtimeLabel(m)
         }
     }
     LaunchedEffect(rows.isNotEmpty(), overlayOpen) {
@@ -61,7 +64,8 @@ fun HomeScreen(onOpen: (MetaPreview) -> Unit, overlayOpen: Boolean) {
         Column(Modifier.fillMaxSize()) {
             HeroInfo(
                 hero,
-                Modifier
+                runtime = heroRuntime,
+                modifier = Modifier
                     .fillMaxWidth()
                     .height(190.dp)
                     .padding(start = 40.dp, top = 28.dp, end = 40.dp),

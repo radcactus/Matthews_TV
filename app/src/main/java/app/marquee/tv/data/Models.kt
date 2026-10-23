@@ -45,6 +45,7 @@ data class Video(
     val thumbnail: String? = null,
     val overview: String? = null,
     val description: String? = null,
+    val runtime: String? = null,
 ) {
     val label: String get() = if (season != null && episode != null) "S$season E$episode" else ""
     val displayTitle: String get() = title ?: name ?: label

@@ -68,6 +68,14 @@ import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ThumbUp
+import androidx.compose.ui.draw.rotate
+import androidx.tv.material3.Icon
+import app.marquee.tv.data.Rating
+import app.marquee.tv.data.WatchStore
 import app.marquee.tv.data.HomeRow
 import app.marquee.tv.data.MetaPreview
 import app.marquee.tv.data.RowItem
@@ -135,6 +143,14 @@ fun PosterCard(
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize(),
                     )
+                }
+                // Reading the version makes the tags update as soon as you rate or finish something.
+                @Suppress("UNUSED_VARIABLE") val v = WatchStore.version
+                if (WatchStore.isWatched(item.meta.id, item.meta.type)) {
+                    WatchedTag(Modifier.align(Alignment.TopStart).padding(6.dp))
+                }
+                WatchStore.rating(item.meta.id)?.let { r ->
+                    RatingBadge(r, Modifier.align(Alignment.TopEnd).padding(6.dp))
                 }
                 item.progress?.let { p ->
                     Box(
@@ -225,7 +241,7 @@ fun Backdrop(url: String?, modifier: Modifier = Modifier, strength: Float = 0.6f
 
 /** Title, facts and synopsis for whatever is focused. */
 @Composable
-fun HeroInfo(meta: MetaPreview?, modifier: Modifier = Modifier) {
+fun HeroInfo(meta: MetaPreview?, modifier: Modifier = Modifier, runtime: String? = null) {
     Column(modifier, verticalArrangement = Arrangement.Bottom) {
         if (meta == null) return@Column
         Text(
@@ -237,11 +253,22 @@ fun HeroInfo(meta: MetaPreview?, modifier: Modifier = Modifier) {
         )
         val facts = listOfNotNull(
             meta.releaseInfo,
+            runtime,
             meta.imdbRating?.takeIf { it.isNotBlank() && it != "0" }?.let { "★ $it" },
             meta.allGenres.take(3).joinToString(" · ").ifBlank { null },
         )
-        if (facts.isNotEmpty()) {
-            Text(facts.joinToString("   "), color = TextDim, fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp))
+        @Suppress("UNUSED_VARIABLE") val v = WatchStore.version
+        val rating = WatchStore.rating(meta.id)
+        val watched = WatchStore.isWatched(meta.id, meta.type)
+        Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (facts.isNotEmpty()) {
+                Text(facts.joinToString("   "), color = TextDim, fontSize = 14.sp)
+            }
+            if (rating != null) {
+                RatingIcon(rating, Modifier.padding(start = 14.dp).size(16.dp), tint = ratingColor(rating))
+                Text("You: ${rating.label}", color = ratingColor(rating), fontSize = 14.sp, modifier = Modifier.padding(start = 6.dp))
+            }
+            if (watched) WatchedTag(Modifier.padding(start = 12.dp))
         }
         meta.description?.let {
             Text(
@@ -383,4 +410,53 @@ fun SectionTitle(text: String, modifier: Modifier = Modifier) {
 @Composable
 fun PillRow(content: @Composable RowScope.() -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically, content = content)
+}
+
+/** Small "Watched" label for posters and episodes. */
+@Composable
+fun WatchedTag(modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .background(Color(0xE6000000), RoundedCornerShape(6.dp))
+            .padding(horizontal = 6.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Filled.Check, contentDescription = null, tint = Accent, modifier = Modifier.size(12.dp))
+        Text("Watched", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 3.dp))
+    }
+}
+
+/** Thumbs up / meh / thumbs down icon. Meh is the thumb turned sideways. */
+@Composable
+fun RatingIcon(r: Rating, modifier: Modifier = Modifier, tint: Color = Color.Unspecified) {
+    Icon(
+        Icons.Filled.ThumbUp,
+        contentDescription = r.label,
+        tint = tint,
+        modifier = modifier.rotate(
+            when (r) {
+                Rating.UP -> 0f
+                Rating.MEH -> -90f
+                Rating.DOWN -> 180f
+            },
+        ),
+    )
+}
+
+fun ratingColor(r: Rating) = when (r) {
+    Rating.UP -> Color(0xFF81C784)
+    Rating.MEH -> Color(0xFFBDBDBD)
+    Rating.DOWN -> Color(0xFFE57373)
+}
+
+@Composable
+fun RatingBadge(r: Rating, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(22.dp)
+            .background(Color(0xE6000000), RoundedCornerShape(11.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        RatingIcon(r, Modifier.size(13.dp), tint = ratingColor(r))
+    }
 }

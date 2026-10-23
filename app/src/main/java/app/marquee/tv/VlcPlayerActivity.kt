@@ -37,6 +37,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.focusable
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -91,6 +93,14 @@ class VlcPlayerActivity : ComponentActivity() {
     private var controlsVisible by mutableStateOf(true)
     private var picker by mutableStateOf<String?>(null)    // "audio" | "subs"
     private var interaction by mutableIntStateOf(0)        // bumps keep the controls up
+    private var seekFocused by mutableStateOf(false)       // focus is on the progress bar
+
+    // Hold-to-scrub: 0 = not scrubbing, otherwise the speed (2x, 4x, …).
+    private var scrubSpeed by mutableIntStateOf(0)
+    private var scrubDir by mutableIntStateOf(0)
+    private var scrubPos by mutableLongStateOf(0L)
+    private var scrubJob: Job? = null
+    private var resumeAfterScrub = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -243,26 +253,90 @@ class VlcPlayerActivity : ComponentActivity() {
         interaction++
     }
 
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN) {
-            when (event.keyCode) {
-                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE -> {
-                    togglePlay(); showControls(); return true
+    /**
+     * Left/right (and the remote's rewind/fast-forward keys): a press skips
+     * 10 seconds; holding scrubs at 2x, then 4x, 8x, 16x, 32x, 64x, and
+     * playback jumps to that spot when you let go.
+     */
+    private fun handleSeekKey(event: KeyEvent, dir: Int): Boolean {
+        when (event.action) {
+            KeyEvent.ACTION_DOWN -> {
+                if (event.repeatCount == 0) {
+                    seekBy(dir * 10_000L)
+                    showControls()
+                } else if (scrubSpeed == 0) {
+                    startScrub(dir)
                 }
-                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> { seekBy(30_000); showControls(); return true }
-                KeyEvent.KEYCODE_MEDIA_REWIND -> { seekBy(-10_000); showControls(); return true }
             }
-            if (!controlsVisible && picker == null) {
-                when (event.keyCode) {
-                    KeyEvent.KEYCODE_DPAD_LEFT -> { seekBy(-10_000); showControls(); return true }
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> { seekBy(30_000); showControls(); return true }
-                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { togglePlay(); showControls(); return true }
-                    KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_MENU -> { showControls(); return true }
+            KeyEvent.ACTION_UP -> if (scrubSpeed != 0) endScrub()
+        }
+        return true
+    }
+
+    private fun startScrub(dir: Int) {
+        scrubDir = dir
+        scrubPos = mp.time
+        resumeAfterScrub = mp.isPlaying
+        if (resumeAfterScrub) mp.pause()
+        scrubSpeed = SPEEDS[0]
+        showControls()
+        scrubJob?.cancel()
+        scrubJob = lifecycleScope.launch {
+            var level = 0
+            var atLevel = 0L
+            while (isActive) {
+                delay(100)
+                atLevel += 100
+                if (atLevel >= 1_500 && level < SPEEDS.lastIndex) {
+                    level++
+                    atLevel = 0
+                    scrubSpeed = SPEEDS[level]
                 }
-            } else {
+                val max = if (length > 0) length - 1_000 else Long.MAX_VALUE
+                scrubPos = (scrubPos + dir * scrubSpeed * 100L).coerceIn(0L, max)
                 interaction++
             }
         }
+    }
+
+    private fun endScrub() {
+        scrubJob?.cancel()
+        scrubJob = null
+        mp.setTime(scrubPos)
+        position = scrubPos
+        scrubSpeed = 0
+        if (resumeAfterScrub) mp.play()
+        interaction++
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val down = event.action == KeyEvent.ACTION_DOWN
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                if (down && event.repeatCount == 0) { togglePlay(); showControls() }
+                return true
+            }
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> return handleSeekKey(event, 1)
+            KeyEvent.KEYCODE_MEDIA_REWIND -> return handleSeekKey(event, -1)
+        }
+        // Left/right skip whenever the controls are hidden or the progress bar
+        // has focus. Press down to reach the buttons, where left/right move between them.
+        val seekMode = picker == null && (!controlsVisible || seekFocused)
+        if (seekMode) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> return handleSeekKey(event, -1)
+                KeyEvent.KEYCODE_DPAD_RIGHT -> return handleSeekKey(event, 1)
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                    if (down && event.repeatCount == 0) { togglePlay(); showControls() }
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_MENU -> if (!controlsVisible) {
+                    if (down) showControls()
+                    return true
+                }
+            }
+        }
+        if (down) interaction++
         return super.dispatchKeyEvent(event)
     }
 
@@ -271,14 +345,15 @@ class VlcPlayerActivity : ComponentActivity() {
     @Composable
     private fun PlayerScreen() {
         val playFocus = remember { FocusRequester() }
+        val seekFocus = remember { FocusRequester() }
 
         BackHandler(enabled = picker != null || controlsVisible) {
             if (picker != null) picker = null else controlsVisible = false
         }
 
         // Hide the controls after 5 seconds without a key press while playing.
-        LaunchedEffect(interaction, controlsVisible, playing, picker) {
-            if (controlsVisible && playing && picker == null) {
+        LaunchedEffect(interaction, controlsVisible, playing, picker, scrubSpeed) {
+            if (controlsVisible && playing && picker == null && scrubSpeed == 0) {
                 delay(5_000)
                 controlsVisible = false
             }
@@ -286,7 +361,7 @@ class VlcPlayerActivity : ComponentActivity() {
         LaunchedEffect(controlsVisible, picker) {
             if (controlsVisible && picker == null) {
                 delay(50)
-                runCatching { playFocus.requestFocus() }
+                runCatching { seekFocus.requestFocus() }
             }
         }
 
@@ -305,8 +380,21 @@ class VlcPlayerActivity : ComponentActivity() {
                 )
             }
 
+            if (scrubSpeed > 0) {
+                Text(
+                    (if (scrubDir < 0) "«  " else "»  ") + "${scrubSpeed}x",
+                    color = Color.White,
+                    fontSize = 34.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .background(Color(0x99000000), RoundedCornerShape(12.dp))
+                        .padding(horizontal = 28.dp, vertical = 14.dp),
+                )
+            }
+
             if (controlsVisible && picker == null) {
-                Controls(playFocus)
+                Controls(playFocus, seekFocus)
             }
 
             picker?.let { kind -> TrackPicker(kind) }
@@ -314,7 +402,7 @@ class VlcPlayerActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun Controls(playFocus: FocusRequester) {
+    private fun Controls(playFocus: FocusRequester, seekFocus: FocusRequester) {
         Column(Modifier.fillMaxSize()) {
             // Title at the top
             Box(
@@ -336,14 +424,28 @@ class VlcPlayerActivity : ComponentActivity() {
                     .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xDD000000))))
                     .padding(start = 40.dp, end = 40.dp, top = 40.dp, bottom = 28.dp),
             ) {
-                val frac = if (length > 0) (position.toFloat() / length).coerceIn(0f, 1f) else 0f
-                Box(Modifier.fillMaxWidth().height(4.dp).background(Color(0x55FFFFFF), RoundedCornerShape(2.dp))) {
-                    Box(Modifier.fillMaxWidth(frac).height(4.dp).background(Accent, RoundedCornerShape(2.dp)))
+                val shown = if (scrubSpeed > 0) scrubPos else position
+                val frac = if (length > 0) (shown.toFloat() / length).coerceIn(0f, 1f) else 0f
+                // The progress bar takes focus first, so left/right always skip;
+                // press down for the buttons.
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(18.dp)
+                        .focusRequester(seekFocus)
+                        .onFocusChanged { seekFocused = it.isFocused }
+                        .focusable(),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    val h = if (seekFocused) 8.dp else 4.dp
+                    Box(Modifier.fillMaxWidth().height(h).background(Color(0x55FFFFFF), RoundedCornerShape(4.dp))) {
+                        Box(Modifier.fillMaxWidth(frac).height(h).background(Accent, RoundedCornerShape(4.dp)))
+                    }
                 }
-                Row(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                    Text(clock(position), fontSize = 13.sp, color = TextDim)
+                Row(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                    Text(clock(shown), fontSize = 13.sp, color = if (scrubSpeed > 0) Color.White else TextDim)
                     Spacer(Modifier.weight(1f))
-                    Text(if (length > 0) "-${clock(length - position)}" else "", fontSize = 13.sp, color = TextDim)
+                    Text(if (length > 0) "-${clock(length - shown)}" else "", fontSize = 13.sp, color = TextDim)
                 }
                 Row(
                     Modifier.padding(top = 14.dp),
@@ -357,13 +459,13 @@ class VlcPlayerActivity : ComponentActivity() {
                         modifier = Modifier.focusRequester(playFocus),
                     )
                     ActionButton("−10s", onClick = { seekBy(-10_000); interaction++ })
-                    ActionButton("+30s", onClick = { seekBy(30_000); interaction++ })
+                    ActionButton("+10s", onClick = { seekBy(10_000); interaction++ })
                     Spacer(Modifier.width(12.dp))
                     ActionButton("Audio", onClick = { picker = "audio" })
                     ActionButton("Subtitles", onClick = { picker = "subs" })
                 }
                 Text(
-                    "Tip: with the controls hidden, left/right skips 10s back or 30s ahead, OK pauses.",
+                    "Left/right: skip 10s, hold to scrub faster (2x, 4x, 8x…). OK: pause. Down: more options.",
                     color = TextDim,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 12.dp),
@@ -427,6 +529,7 @@ class VlcPlayerActivity : ComponentActivity() {
     }
 
     companion object {
+        private val SPEEDS = intArrayOf(2, 4, 8, 16, 32, 64)
         private const val EXTRA_URL = "url"
         private const val EXTRA_TARGET = "target"
         private const val EXTRA_HEADER_KEYS = "hk"

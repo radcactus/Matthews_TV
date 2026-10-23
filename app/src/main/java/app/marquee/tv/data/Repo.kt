@@ -38,6 +38,9 @@ object Repo {
     val error = MutableStateFlow<String?>(null)
     val signedIn = MutableStateFlow(false)
 
+    /** A title to open, set when the app is launched from the TV home screen. */
+    val deepLink = MutableStateFlow<MetaPreview?>(null)
+
     private val metaCache = ConcurrentHashMap<String, MetaDetail>()
     private val catalogCache = ConcurrentHashMap<String, Pair<Long, List<MetaPreview>>>()
     private val gate = Semaphore(8)
@@ -46,15 +49,22 @@ object Repo {
 
     // Slot order on the home screen.
     private const val SLOT_CONTINUE = 0
+    const val SLOT_HOLIDAY = 5
     const val SLOT_PICKS = 10
     const val SLOT_BECAUSE = 20      // 20..29
     const val SLOT_GENRE = 40        // 40..59
     private const val SLOT_CATALOGS = 100
+    private const val SLOT_WATCHED = 9_000
     private const val SLOT_LIBRARY = 10_000
+
+    /** Rows that may repeat titles shown elsewhere (they're your own lists). */
+    private val exemptFromDedupe = setOf("continue", "library", "watched")
 
     fun init(context: Context) {
         prefs = Prefs(context)
         DeviceCaps.init(context)
+        WatchStore.init(context)
+        WatchNext.init(context)
         signedIn.value = prefs.authKey != null
         progress.value = prefs.loadProgress()
         prefs.addonsJson?.let { json ->
@@ -79,6 +89,7 @@ object Repo {
         prefs.authKey = null
         prefs.email = null
         prefs.addonsJson = null
+        WatchNext.clearAll()
         signedIn.value = false
         library.value = emptyList()
         homeSlots.clear()
@@ -99,6 +110,7 @@ object Repo {
                     prefs.addonsJson = raw.toString()
                     addons.value = parseCollection(raw)
                     library.value = StremioApi.library(key).map(::LibItem)
+                    WatchStore.setStremioWatched(library.value)
                 } else {
                     addons.value = listOfNotNull(
                         runCatching { AddonClient.manifest(CINEMETA) }.getOrNull() ?: fallbackCinemeta()
@@ -201,9 +213,38 @@ object Repo {
 
     // ---- home -------------------------------------------------------------
 
+    /**
+     * Each title appears in only one row: the first one it shows up in, top
+     * to bottom. Your own lists (Continue watching, Watch again, Library) are
+     * left whole. Rows left with only a handful of titles are dropped.
+     */
     private fun publish() {
-        home.value = homeSlots.values.filter { it.items.isNotEmpty() }.distinctBy { it.key }
+        val seen = HashSet<String>()
+        val rows = mutableListOf<HomeRow>()
+        for (row in homeSlots.values.distinctBy { it.key }) {
+            if (row.items.isEmpty()) continue
+            if (row.key in exemptFromDedupe) {
+                rows += row
+                if (row.key == "continue") row.items.forEach { seen += it.meta.id }
+                continue
+            }
+            val fresh = row.items.filter { it.meta.id !in seen }
+            if (fresh.size < minOf(5, row.items.size)) continue
+            fresh.forEach { seen += it.meta.id }
+            rows += row.copy(items = fresh)
+        }
+        home.value = rows
     }
+
+    /** Rebuilds the rows that depend on what you've watched and rated. */
+    fun refreshPersonalRows() {
+        putHomeRow(SLOT_CONTINUE, continueWatching())
+        putHomeRow(SLOT_WATCHED, watchAgain())
+        scope.launch { runCatching { Recommender.build() }.onFailure { Log.w(TAG, "recs failed", it) } }
+    }
+
+    private fun watchAgain() =
+        HomeRow("watched", "Watch again", WatchStore.watchedTitles().take(40).map { RowItem(it) })
 
     /** Drops rows in [from, until) left over from a previous refresh. */
     fun clearSlots(from: Int, end: Int) {
@@ -234,6 +275,8 @@ object Repo {
             }
         }
         jobs += launch { runCatching { Recommender.build() }.onFailure { Log.w(TAG, "recs failed", it) } }
+        jobs += launch { runCatching { Seasonal.build() }.onFailure { Log.w(TAG, "seasonal failed", it) } }
+        putHomeRow(SLOT_WATCHED, watchAgain())
 
         val lib = library.value.filter { it.inLibrary }.sortedByDescending { it.mtime }.take(40)
         putHomeRow(SLOT_LIBRARY, HomeRow("library", "Your library", lib.map { RowItem(it.preview()) }))
@@ -296,7 +339,8 @@ object Repo {
     }
 
     fun watchedIds(): Set<String> =
-        library.value.filter { it.everWatched || it.inLibrary }.map { it.id }.toSet() + progress.value.keys
+        library.value.filter { it.everWatched || it.inLibrary }.map { it.id }.toSet() + progress.value.keys +
+            WatchStore.excludedIds()
 
     /** Seeds for recommendations: recently watched titles, newest first. */
     fun historySeeds(limit: Int = 25): List<MetaPreview> {
@@ -319,7 +363,12 @@ object Repo {
         }
         progress.value = map
         prefs.saveProgress(map)
+        if (finished) {
+            WatchStore.markFinished(p.id, p.type, p.videoId, p.name, p.poster)
+            putHomeRow(SLOT_WATCHED, watchAgain())
+        }
         putHomeRow(SLOT_CONTINUE, continueWatching())
+        WatchNext.update(map[p.id]!!)
         if (sync) scope.launch { syncToStremio(p, finished) }
     }
 

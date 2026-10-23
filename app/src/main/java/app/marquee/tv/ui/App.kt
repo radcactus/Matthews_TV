@@ -24,6 +24,8 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -85,6 +87,15 @@ fun MarqueeApp() {
         if (layers.isEmpty()) return
         layers.removeAt(layers.lastIndex)
         if (layers.isEmpty()) FocusMemory.pending = baseFocusKey
+    }
+
+    // Opened from the TV home screen: go straight to that title.
+    val link by Repo.deepLink.collectAsState()
+    LaunchedEffect(link) {
+        val m = link ?: return@LaunchedEffect
+        Repo.deepLink.value = null
+        layers.removeAll { it is Layer.Detail }
+        open(m)
     }
 
     BackHandler(enabled = layers.isEmpty() && tab != Tab.Home) { tab = Tab.Home }

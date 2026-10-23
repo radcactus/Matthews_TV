@@ -69,7 +69,7 @@ class PlayerActivity : ComponentActivity() {
         val p = ExoPlayer.Builder(this, renderers)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
             .setSeekBackIncrementMs(10_000)
-            .setSeekForwardIncrementMs(30_000)
+            .setSeekForwardIncrementMs(10_000)
             .build()
 
         view = PlayerView(this).apply {

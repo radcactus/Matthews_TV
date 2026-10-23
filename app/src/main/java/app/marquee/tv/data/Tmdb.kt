@@ -77,4 +77,61 @@ object Tmdb {
         if (metas.isNotEmpty()) recCache["$type/$imdbId"] = metas
         return metas
     }
+
+    private val keywordCache = ConcurrentHashMap<String, List<MetaPreview>>()
+
+    /** Popular, well-reviewed movies tagged with a TMDB keyword (e.g. "christmas"), as IMDb ids. */
+    suspend fun moviesWithKeyword(key: String, keyword: String, limit: Int = 30): List<MetaPreview> {
+        keywordCache[keyword]?.let { return it }
+        val search = get(key, "/search/keyword?query=${android.net.Uri.encode(keyword)}") ?: return emptyList()
+        val kw = (search.arr("results")?.firstOrNull() as? JsonObject)?.long("id") ?: return emptyList()
+        val found = get(key, "/discover/movie?with_keywords=$kw&sort_by=popularity.desc&vote_count.gte=150") ?: return emptyList()
+        val results = found.arr("results")?.mapNotNull { it as? JsonObject }.orEmpty().take(limit)
+        val metas = coroutineScope {
+            results.map { o ->
+                async {
+                    val tid = o.long("id")?.toInt() ?: return@async null
+                    val imdb = imdbFor(key, "movie", tid) ?: return@async null
+                    MetaPreview(
+                        id = imdb,
+                        type = "movie",
+                        name = o.str("title").orEmpty(),
+                        poster = o.str("poster_path")?.let { "$IMG/w342$it" },
+                        background = o.str("backdrop_path")?.let { "$IMG/w1280$it" },
+                        description = o.str("overview"),
+                        releaseInfo = o.str("release_date")?.take(4),
+                        imdbRating = o.double("vote_average")?.let { String.format(Locale.US, "%.1f", it) },
+                    )
+                }
+            }.awaitAll().filterNotNull()
+        }
+        if (metas.isNotEmpty()) keywordCache[keyword] = metas
+        return metas
+    }
+
+    private val runtimeCache = ConcurrentHashMap<String, Map<String, Int>>()
+
+    /**
+     * Runtime in minutes per episode video id ("tt123:2:5") for one season,
+     * or for a movie under its own id. Empty if TMDB doesn't know.
+     */
+    suspend fun runtimes(key: String, type: String, imdbId: String, season: Int?): Map<String, Int> {
+        val ck = "$type/$imdbId/$season"
+        runtimeCache[ck]?.let { return it }
+        val id = tmdbId(key, type, imdbId) ?: return emptyMap()
+        val out = if (type == "movie") {
+            val r = get(key, "/movie/$id") ?: return emptyMap()
+            r.long("runtime")?.toInt()?.takeIf { it > 0 }?.let { mapOf(imdbId to it) }.orEmpty()
+        } else {
+            val sn = season ?: return emptyMap()
+            val r = get(key, "/tv/$id/season/$sn") ?: return emptyMap()
+            r.arr("episodes")?.mapNotNull { it as? JsonObject }.orEmpty().mapNotNull { e ->
+                val ep = e.long("episode_number")?.toInt() ?: return@mapNotNull null
+                val rt = e.long("runtime")?.toInt()?.takeIf { it > 0 } ?: return@mapNotNull null
+                "$imdbId:$sn:$ep" to rt
+            }.toMap()
+        }
+        runtimeCache[ck] = out
+        return out
+    }
 }
