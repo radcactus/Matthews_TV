@@ -55,22 +55,22 @@ object Playback {
             return
         }
         val choice = player ?: Repo.prefs.playerChoice
-        val external = ExternalPlayer.byId(choice)
-        if (external != null) {
-            if (external.installedPackage(ctx) != null) {
-                ctx.startActivity(ExternalPlayerActivity.intent(ctx, external, url, headers, t))
-                return
+        when (choice) {
+            PlayerChoice.BUILTIN -> ctx.startActivity(PlayerActivity.intent(ctx, url, headers, t))
+            PlayerChoice.VLC, PlayerChoice.ASK -> ctx.startActivity(VlcPlayerActivity.intent(ctx, url, headers, t))
+            else -> {
+                // Another app, only when chosen in Settings or with a long-press.
+                val external = ExternalPlayer.byId(choice)
+                if (external != null && external.installedPackage(ctx) != null) {
+                    ctx.startActivity(ExternalPlayerActivity.intent(ctx, external, url, headers, t))
+                } else {
+                    external?.let {
+                        Toast.makeText(ctx, "${it.label} isn't installed, playing in Matthews TV", Toast.LENGTH_SHORT).show()
+                    }
+                    ctx.startActivity(VlcPlayerActivity.intent(ctx, url, headers, t))
+                }
             }
-            Toast.makeText(ctx, "${external.label} isn't installed, using the built-in player", Toast.LENGTH_SHORT).show()
         }
-        ctx.startActivity(PlayerActivity.intent(ctx, url, headers, t))
-    }
-
-    /** Hands a stream the built-in player couldn't play to an installed external player. */
-    fun fallbackToExternal(ctx: Context, url: String, headers: Map<String, String>, t: PlayTarget): ExternalPlayer? {
-        val p = ExternalPlayer.installed(ctx).firstOrNull() ?: return null
-        ctx.startActivity(ExternalPlayerActivity.intent(ctx, p, url, headers, t))
-        return p
     }
 
     fun openInStremio(ctx: Context, type: String, id: String, videoId: String?) {

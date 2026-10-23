@@ -13,8 +13,14 @@ android {
         applicationId = "app.marquee.tv"
         minSdk = 22          // Fire OS 6+ and every Google TV device
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Each GitHub build gets a higher version so the TV sees it as an update.
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionName = "0.2.${System.getenv("GITHUB_RUN_NUMBER") ?: "0"}"
+
+        // TV boxes run ARM; leaving out x86 keeps the VLC engine's size down.
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
     }
 
     // Release builds are signed with a private key kept in the repo's GitHub
@@ -72,6 +78,9 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-dash:1.5.1")
     implementation("androidx.media3:media3-ui:1.5.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.5.1")
+
+    // VLC's playback engine, built into the app (the same engine the VLC app and Stremio use).
+    implementation("org.videolan.android:libvlc-all:3.6.0")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")

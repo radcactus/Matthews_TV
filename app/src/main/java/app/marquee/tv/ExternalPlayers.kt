@@ -15,7 +15,7 @@ import app.marquee.tv.data.Repo
 
 /** A video player app Marquee can hand streams to. */
 enum class ExternalPlayer(val id: String, val label: String, val packages: List<String>) {
-    VLC("vlc", "VLC", listOf("org.videolan.vlc")),
+    VLC("vlc_app", "VLC app", listOf("org.videolan.vlc")),
     MX("mx", "MX Player", listOf("com.mxtech.videoplayer.pro", "com.mxtech.videoplayer.ad", "com.mxtech.videoplayer.beta")),
     JUST("just", "Just Player", listOf("com.brouken.player"));
 
@@ -36,10 +36,14 @@ enum class ExternalPlayer(val id: String, val label: String, val packages: List<
 
 /** Player choices shown in Settings and the "Play with" picker. */
 object PlayerChoice {
+    /** VLC's engine inside Matthews TV (the default). */
+    const val VLC = "vlc"
+    /** Android's ExoPlayer engine inside Matthews TV. */
     const val BUILTIN = "builtin"
     const val ASK = "ask"
     fun label(id: String) = when (id) {
-        BUILTIN -> "Built-in"
+        VLC -> "VLC (built in)"
+        BUILTIN -> "ExoPlayer (built in)"
         ASK -> "Ask every time"
         else -> ExternalPlayer.byId(id)?.label ?: id
     }

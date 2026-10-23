@@ -35,10 +35,10 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("syncProgress", true)
         set(v) = sp.edit().putBoolean("syncProgress", v).apply()
 
-    /** "builtin", "ask", or an external player id ("vlc", "mx", "just"). Default: VLC. */
+    /** "vlc" (built-in VLC engine, default), "builtin" (ExoPlayer), "ask", or an external app id. */
     var playerChoice: String
         get() = sp.getString("playerChoice", null)
-            ?: "vlc"   // VLC by default; falls back to built-in if VLC is not installed
+            ?: "vlc"
         set(v) = sp.edit().putString("playerChoice", v).apply()
 
     /** Test links when the streams panel opens. */

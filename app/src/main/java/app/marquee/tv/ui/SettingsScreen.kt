@@ -108,15 +108,13 @@ fun SettingsScreen(onSignIn: () -> Unit) {
             ) { probeUncached = !probeUncached; prefs.probeUncached = probeUncached }
         }
         item {
-            Note("Default player. VLC, MX Player and Just Player report where you stopped, so resume and Continue watching work in them too. Long-press any stream to pick a different player just for that one. If the built-in player can't decode a file, Matthews TV hands it to an installed external player automatically.")
+            Note("Player. Both players are built into Matthews TV, so nothing opens another app. VLC plays almost any file; ExoPlayer is Android's own engine. If one can't start a file, Matthews TV tries the other automatically. Long-press any stream to pick a player just for that one. Video apps installed on this TV are listed too, if you ever want them.")
         }
         item {
-            val options = listOf(PlayerChoice.BUILTIN) + ExternalPlayer.entries.map { it.id } + PlayerChoice.ASK
+            val options = listOf(PlayerChoice.VLC, PlayerChoice.BUILTIN, PlayerChoice.ASK) + installedPlayers.map { it.id }
             PillRow {
                 options.forEach { id ->
-                    val ext = ExternalPlayer.byId(id)
-                    val label = PlayerChoice.label(id) + if (ext != null && ext !in installedPlayers) " (not installed)" else ""
-                    Pill(label, playerChoice == id, { playerChoice = id; prefs.playerChoice = id })
+                    Pill(PlayerChoice.label(id), playerChoice == id, { playerChoice = id; prefs.playerChoice = id })
                 }
             }
         }

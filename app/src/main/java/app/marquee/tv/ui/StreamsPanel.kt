@@ -269,7 +269,6 @@ fun StreamsPanel(target: PlayTarget, onDismiss: () -> Unit) {
 private fun PlayWithPicker(onPick: (String) -> Unit) {
     val ctx = LocalContext.current
     val installed = remember { ExternalPlayer.installed(ctx) }
-    val missing = ExternalPlayer.entries.filter { it !in installed }
     val first = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
     FocusTrap(Modifier.fillMaxSize().background(Color(0xB3000000))) {
@@ -282,18 +281,15 @@ private fun PlayWithPicker(onPick: (String) -> Unit) {
             ) {
                 Text("Play with", style = MaterialTheme.typography.titleLarge)
                 ActionButton(
-                    "Built-in player",
+                    "VLC (built in)",
                     primary = true,
-                    onClick = { onPick(PlayerChoice.BUILTIN) },
+                    onClick = { onPick(PlayerChoice.VLC) },
                     modifier = Modifier.focusRequester(first),
                 )
-                installed.forEach { p -> ActionButton(p.label, onClick = { onPick(p.id) }) }
-                if (missing.isNotEmpty()) {
-                    Text(
-                        "Not installed: ${missing.joinToString(", ") { it.label }}",
-                        color = TextDim,
-                        fontSize = 12.sp,
-                    )
+                ActionButton("ExoPlayer (built in)", onClick = { onPick(PlayerChoice.BUILTIN) })
+                if (installed.isNotEmpty()) {
+                    Text("Other apps on this TV", color = TextDim, fontSize = 12.sp)
+                    installed.forEach { p -> ActionButton(p.label, onClick = { onPick(p.id) }) }
                 }
             }
         }

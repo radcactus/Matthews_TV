@@ -3,7 +3,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Lets Marquee see which video players are installed (Android 11+). -->
+    <!-- Lets the app see which video players are installed (Android 11+). -->
     <queries>
         <package android:name="org.videolan.vlc" />
         <package android:name="com.mxtech.videoplayer.ad" />
@@ -41,6 +41,13 @@
 
         <activity
             android:name=".PlayerActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.Marquee.Player" />
+
+        <activity
+            android:name=".VlcPlayerActivity"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
             android:exported="false"
             android:screenOrientation="landscape"

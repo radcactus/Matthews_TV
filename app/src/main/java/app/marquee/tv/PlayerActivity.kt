@@ -104,14 +104,11 @@ class PlayerActivity : ComponentActivity() {
 
             override fun onPlayerError(error: PlaybackException) {
                 // Flag it so the streams panel shows it as broken next time.
-                // Decoder or format problems are often fine in VLC; network errors are not.
+                // Decoder or format problems are usually fine in the VLC engine; network errors are not.
                 val formatProblem = error.errorCode in 4000..4999
-                val ext = if (formatProblem) {
+                if (formatProblem && !intent.getBooleanExtra(EXTRA_IS_FALLBACK, false)) {
                     savePosition = false
-                    Playback.fallbackToExternal(this@PlayerActivity, url, headers, target(p.currentPosition))
-                } else null
-                if (ext != null) {
-                    Toast.makeText(this@PlayerActivity, "Built-in player can't decode this, opening ${ext.label}", Toast.LENGTH_LONG).show()
+                    startActivity(VlcPlayerActivity.intent(this@PlayerActivity, url, headers, target(p.currentPosition), isFallback = true))
                 } else {
                     StreamChecker.markBroken(url, "Failed to play (${error.errorCodeName})")
                     Toast.makeText(
@@ -200,9 +197,11 @@ class PlayerActivity : ComponentActivity() {
         private const val EXTRA_LABEL = "label"
         private const val EXTRA_NEXT = "next"
         private const val EXTRA_NEXT_LABEL = "nextLabel"
+        private const val EXTRA_IS_FALLBACK = "fallback"
 
-        fun intent(ctx: Context, url: String, headers: Map<String, String>, t: PlayTarget): Intent =
+        fun intent(ctx: Context, url: String, headers: Map<String, String>, t: PlayTarget, isFallback: Boolean = false): Intent =
             Intent(ctx, PlayerActivity::class.java)
+                .putExtra(EXTRA_IS_FALLBACK, isFallback)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 .putExtra(EXTRA_URL, url)
                 .putExtra(EXTRA_HEADER_KEYS, headers.keys.toTypedArray())
