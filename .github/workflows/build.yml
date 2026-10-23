@@ -1,0 +1,57 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Load signing key from secrets
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::Add the SIGNING_KEY and SIGNING_PASSWORD secrets (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          echo "$SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/release.jks"
+
+      - name: Build release APK
+        env:
+          SIGNING_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --stacktrace
+          cp app/build/outputs/apk/release/app-release.apk matthews-tv.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matthews-tv
+          path: matthews-tv.apk
+
+      # Publishes the APK at a fixed URL:
+      # https://github.com/<you>/<repo>/releases/latest/download/matthews-tv.apk
+      - name: Publish "latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          body: "Built from ${{ github.sha }}"
+          make_latest: true
+          files: matthews-tv.apk
