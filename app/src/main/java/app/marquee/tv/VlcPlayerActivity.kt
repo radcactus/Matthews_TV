@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -814,20 +815,20 @@ class VlcPlayerActivity : ComponentActivity() {
 
             // Top left: back, start over, rewind, forward, next episode.
             Row(
-                Modifier.align(Alignment.TopStart).padding(start = 48.dp, top = 36.dp),
-                horizontalArrangement = Arrangement.spacedBy(22.dp),
+                Modifier.align(Alignment.TopStart).padding(start = 56.dp, top = 40.dp),
+                horizontalArrangement = Arrangement.spacedBy(28.dp),
                 verticalAlignment = Alignment.Top,
             ) {
-                TopIcon(PlayerIcons.Back, "Back", onClick = { finish() })
-                TopIcon(PlayerIcons.StartOver, "Start over", onClick = { startOver() }, modifier = Modifier.focusRequester(playFocus))
-                TopIcon(PlayerIcons.Rewind, "Back 10s", onClick = { seekBy(-10_000); interaction++ })
-                TopIcon(PlayerIcons.Forward, "Forward 10s", onClick = { seekBy(10_000); interaction++ })
-                if (nextTarget != null) TopIcon(PlayerIcons.Next, "Next episode", onClick = { goToNext() })
+                TopIcon(PlayerIcons.OutlineBack, "Back", onClick = { finish() })
+                TopIcon(PlayerIcons.OutlineStartOver, "Start over", onClick = { startOver() }, modifier = Modifier.focusRequester(playFocus))
+                TopIcon(PlayerIcons.OutlineBack10, "Back 10s", badge = "10", onClick = { seekBy(-10_000); interaction++ })
+                TopIcon(PlayerIcons.OutlineForward10, "Forward 10s", badge = "10", onClick = { seekBy(10_000); interaction++ })
+                if (nextTarget != null) TopIcon(PlayerIcons.OutlineNext, "Next episode", onClick = { goToNext() })
             }
 
             // Top right: show and episode.
             Column(
-                Modifier.align(Alignment.TopEnd).padding(end = 48.dp, top = 40.dp).width(520.dp),
+                Modifier.align(Alignment.TopEnd).padding(end = 56.dp, top = 40.dp).width(480.dp),
                 horizontalAlignment = Alignment.End,
             ) {
                 Text(target.name, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -921,25 +922,38 @@ class VlcPlayerActivity : ComponentActivity() {
         }
     }
 
-    /** Outline icon for the top row; its name shows underneath while it's highlighted. */
+    /**
+     * Netflix-style top-row button: a thin white outline icon with no
+     * background. The highlighted one grows and brightens, and its name
+     * appears underneath.
+     */
     @Composable
-    private fun TopIcon(icon: ImageVector, label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    private fun TopIcon(
+        icon: ImageVector,
+        label: String,
+        onClick: () -> Unit,
+        modifier: Modifier = Modifier,
+        badge: String? = null,
+    ) {
         var focused by remember { mutableStateOf(false) }
-        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(84.dp)) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(44.dp)) {
             Surface(
                 onClick = onClick,
-                modifier = modifier.size(52.dp).onFocusChanged { focused = it.isFocused },
+                modifier = modifier.size(44.dp).onFocusChanged { focused = it.isFocused },
                 shape = ClickableSurfaceDefaults.shape(shape = CircleShape),
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.Transparent,
-                    contentColor = Color(0xE6FFFFFF),
-                    focusedContainerColor = Color(0x33FFFFFF),
+                    contentColor = Color(0xCCFFFFFF),
+                    focusedContainerColor = Color.Transparent,
                     focusedContentColor = Color.White,
                 ),
-                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.15f),
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.25f),
             ) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Icon(icon, contentDescription = label, modifier = Modifier.size(32.dp))
+                    Icon(icon, contentDescription = label, modifier = Modifier.size(38.dp))
+                    if (badge != null) {
+                        Text(badge, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 2.dp))
+                    }
                 }
             }
             Text(
@@ -947,7 +961,8 @@ class VlcPlayerActivity : ComponentActivity() {
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
-                modifier = Modifier.padding(top = 8.dp).height(18.dp),
+                softWrap = false,
+                modifier = Modifier.padding(top = 10.dp).wrapContentWidth(unbounded = true),
             )
         }
     }

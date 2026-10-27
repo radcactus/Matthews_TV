@@ -2,6 +2,8 @@ package app.marquee.tv.ui
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.unit.dp
@@ -15,6 +17,31 @@ object PlayerIcons {
         ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f)
             .addPath(pathData = addPathNodes(path), fill = SolidColor(Color.White))
             .build()
+
+    /** Thin outline icon (like Netflix's top row); [filled] parts are solid. */
+    private fun outline(name: String, stroke: String, filled: String? = null): ImageVector =
+        ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f)
+            .addPath(
+                pathData = addPathNodes(stroke),
+                fill = null,
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.7f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            )
+            .apply { if (filled != null) addPath(pathData = addPathNodes(filled), fill = SolidColor(Color.White)) }
+            .build()
+
+    // Top row of the pause screen
+    val OutlineBack = outline("OutlineBack", "M19 12H5M11 6l-6 6 6 6")
+    val OutlineStartOver = outline(
+        "OutlineStartOver",
+        "M4.5 12A7.5 7.5 0 1 0 6.7 6.7M6.5 3.5v3.4h3.4",
+        filled = "M10.4 9.1v5.8l4.6-2.9z",
+    )
+    val OutlineBack10 = outline("OutlineBack10", "M4.5 12A7.5 7.5 0 1 0 6.7 6.7M6.5 3.5v3.4h3.4")
+    val OutlineForward10 = outline("OutlineForward10", "M19.5 12A7.5 7.5 0 1 1 17.3 6.7M17.5 3.5v3.4h-3.4")
+    val OutlineNext = outline("OutlineNext", "M6 6l9 6-9 6zM18 6v12")
 
     val Play = icon("Play", "M8 5v14l11-7z")
     val Pause = icon("Pause", "M6 19h4V5H6v14zm8-14v14h4V5h-4z")
