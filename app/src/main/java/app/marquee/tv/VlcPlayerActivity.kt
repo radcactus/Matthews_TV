@@ -130,6 +130,8 @@ class VlcPlayerActivity : ComponentActivity() {
     )
 
     private var embeddedSubs by mutableStateOf<List<Pair<Int, String>>>(emptyList())
+    private var audioList by mutableStateOf<List<Pair<Int, String>>>(emptyList())
+    private var currentAudio by mutableIntStateOf(-1)
     private var addonSubs by mutableStateOf<List<Pair<String, SubtitleFile>>>(emptyList())
     private var addonSubsLoaded by mutableStateOf(false)
     private var selectedSub by mutableStateOf<String?>(null)     // SubOption.key, null = off
@@ -357,6 +359,8 @@ class VlcPlayerActivity : ComponentActivity() {
             spu.firstOrNull { it.id !in known }?.let { slaveTracks[u] = it.id; pendingSlaveUrl = null }
         }
         embeddedSubs = spu.filter { it.id !in slaveTracks.values }.map { it.id to it.name.orEmpty() }
+        audioList = runCatching { mp.audioTracks }.getOrNull()?.filter { it.id != -1 }?.map { it.id to it.name.orEmpty() }.orEmpty()
+        currentAudio = runCatching { mp.audioTrack }.getOrDefault(-1)
         restoreSub?.let { key ->
             subOptions().firstOrNull { it.key == key }?.let { restoreSub = null; selectSub(it, remember = false) }
         }
@@ -729,6 +733,7 @@ class VlcPlayerActivity : ComponentActivity() {
 
             when (picker) {
                 "subs" -> SubtitlePanel()
+                "style" -> SubtitlePanel(styleOnly = true)
                 "audio" -> AudioPicker()
             }
 
@@ -749,92 +754,224 @@ class VlcPlayerActivity : ComponentActivity() {
         }
     }
 
+    /** A quick audio + subtitle combination, like the chips under Netflix's progress bar. */
+    private data class LangChip(val label: String, val audioId: Int, val sub: SubOption?)
+
+    private fun languageChips(): List<LangChip> {
+        val opts = subOptions()
+        fun bestSub(lang: String) = opts.firstOrNull { it.language.equals(lang, true) && it.trackId != null }
+            ?: opts.firstOrNull { it.language.equals(lang, true) }
+        val wanted = Repo.prefs.subtitleLanguage ?: Locale.getDefault().getDisplayLanguage(Locale.ENGLISH).ifBlank { "English" }
+        val sub = bestSub(wanted) ?: bestSub("English")
+        val audios = audioList.ifEmpty { listOf(-1 to "") }
+        val chips = mutableListOf<LangChip>()
+        for ((id, name) in audios.take(3)) {
+            val lang = when {
+                name.isBlank() -> "Original audio"
+                else -> embeddedLanguage(name).takeIf { it != "Other" } ?: name.substringBefore(" - ").ifBlank { "Track $id" }
+            }
+            chips += LangChip(lang, id, null)
+            if (sub != null) chips += LangChip("$lang with Subtitles", id, sub)
+        }
+        return chips.distinctBy { it.label }.take(4)
+    }
+
+    private fun applyChip(c: LangChip) {
+        if (c.audioId >= 0) {
+            mp.setAudioTrack(c.audioId)
+            currentAudio = c.audioId
+        }
+        selectSub(c.sub)
+        interaction++
+    }
+
+    /** "S2: E1 \"Last Chance for a Slow Dance\"" for episodes. */
+    private fun episodeLine(): String? {
+        val parts = target.videoId.split(":")
+        val season = parts.getOrNull(parts.size - 2)?.toIntOrNull()
+        val episode = parts.lastOrNull()?.toIntOrNull()
+        val number = if (target.type != "movie" && parts.size >= 3 && season != null && episode != null) "S$season: E$episode" else target.label
+        val title = target.episodeTitle?.let { "\"$it\"" }
+        return listOfNotNull(number, title).joinToString(" ").ifBlank { null }
+    }
+
+    /**
+     * The pause screen, laid out like Netflix's: controls top left, title top
+     * right, play state + progress bar at the bottom with quick language
+     * choices underneath. The progress bar has focus: left/right skip 10s
+     * (hold to scrub), OK pauses, up for the top controls, down for languages.
+     */
     @Composable
     private fun Controls(playFocus: FocusRequester, seekFocus: FocusRequester) {
-        Column(Modifier.fillMaxSize()) {
-            // Title, and for episodes the season/episode number and name.
+        Box(Modifier.fillMaxSize()) {
+            // Darken the picture like Netflix does while paused; lighter edges while playing.
             Box(
-                Modifier
-                    .fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent)))
-                    .padding(horizontal = 40.dp, vertical = 24.dp),
+                Modifier.fillMaxSize().background(
+                    if (!playing) Brush.verticalGradient(listOf(Color(0xB3000000), Color(0x80000000), Color(0xCC000000)))
+                    else Brush.verticalGradient(0f to Color(0x99000000), 0.3f to Color.Transparent, 0.65f to Color.Transparent, 1f to Color(0xCC000000)),
+                ),
+            )
+
+            // Top left: back, start over, rewind, forward, next episode.
+            Row(
+                Modifier.align(Alignment.TopStart).padding(start = 48.dp, top = 36.dp),
+                horizontalArrangement = Arrangement.spacedBy(22.dp),
+                verticalAlignment = Alignment.Top,
             ) {
-                Column {
-                    Text(target.name, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    val episodeLine = listOfNotNull(target.label, target.episodeTitle).joinToString("  ·  ")
-                    if (episodeLine.isNotBlank()) {
-                        Text(episodeLine, color = Color(0xFFDADDE3), fontSize = 16.sp, modifier = Modifier.padding(top = 4.dp))
-                    }
+                TopIcon(PlayerIcons.Back, "Back", onClick = { finish() })
+                TopIcon(PlayerIcons.StartOver, "Start over", onClick = { startOver() }, modifier = Modifier.focusRequester(playFocus))
+                TopIcon(PlayerIcons.Rewind, "Back 10s", onClick = { seekBy(-10_000); interaction++ })
+                TopIcon(PlayerIcons.Forward, "Forward 10s", onClick = { seekBy(10_000); interaction++ })
+                if (nextTarget != null) TopIcon(PlayerIcons.Next, "Next episode", onClick = { goToNext() })
+            }
+
+            // Top right: show and episode.
+            Column(
+                Modifier.align(Alignment.TopEnd).padding(end = 48.dp, top = 40.dp).width(520.dp),
+                horizontalAlignment = Alignment.End,
+            ) {
+                Text(target.name, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                episodeLine()?.let {
+                    Text(it, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFE6E8EC), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            Spacer(Modifier.weight(1f))
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xDD000000))))
-                    .padding(start = 40.dp, end = 40.dp, top = 40.dp, bottom = 22.dp),
-            ) {
+
+            // Bottom: play state, times, progress, languages.
+            Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(start = 48.dp, end = 48.dp, bottom = 36.dp)) {
                 val shown = if (scrubSpeed > 0) scrubPos else position
                 val frac = if (length > 0) (shown.toFloat() / length).coerceIn(0f, 1f) else 0f
-                // The progress bar takes focus first, so left/right always skip;
-                // press down for the buttons.
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(18.dp)
-                        .focusRequester(seekFocus)
-                        .onFocusChanged { seekFocused = it.isFocused }
-                        .focusable(),
-                    contentAlignment = Alignment.CenterStart,
-                ) {
-                    val h = if (seekFocused) 8.dp else 4.dp
-                    Box(Modifier.fillMaxWidth().height(h).background(Color(0x55FFFFFF), RoundedCornerShape(4.dp))) {
-                        Box(Modifier.fillMaxWidth(frac).height(h).background(Accent, RoundedCornerShape(4.dp)))
-                    }
-                }
-                Row(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-                    Text(clock(shown), fontSize = 13.sp, color = if (scrubSpeed > 0) Color.White else TextDim)
-                    Spacer(Modifier.weight(1f))
-                    Text(if (length > 0) "-${clock(length - shown)}" else "", fontSize = 13.sp, color = TextDim)
-                }
-
-                // Classic transport controls in the usual order, with captions and audio on the right.
-                Box(Modifier.fillMaxWidth().padding(top = 10.dp)) {
-                    Row(
-                        Modifier.align(Alignment.Center),
-                        horizontalArrangement = Arrangement.spacedBy(22.dp),
-                        verticalAlignment = Alignment.Top,
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .size(56.dp)
+                            .background(if (seekFocused) Color.White else Color(0xE6FFFFFF), CircleShape),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        PlayerButton(PlayerIcons.StartOver, "Start over", onClick = { startOver() })
-                        PlayerButton(PlayerIcons.Rewind, "Back 10s", onClick = { seekBy(-10_000); interaction++ })
-                        PlayerButton(
+                        Icon(
                             if (playing) PlayerIcons.Pause else PlayerIcons.Play,
-                            if (playing) "Pause" else "Play",
-                            big = true,
-                            onClick = { togglePlay(); interaction++ },
-                            modifier = Modifier.focusRequester(playFocus),
+                            contentDescription = if (playing) "Playing" else "Paused",
+                            tint = Color.Black,
+                            modifier = Modifier.size(30.dp),
                         )
-                        PlayerButton(PlayerIcons.Forward, "Forward 10s", onClick = { seekBy(10_000); interaction++ })
-                        if (nextTarget != null) {
-                            PlayerButton(PlayerIcons.Next, "Next episode", onClick = { goToNext() })
+                    }
+                    Text(
+                        clock(shown),
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (scrubSpeed > 0) Accent else Color.White,
+                        modifier = Modifier.padding(start = 22.dp, end = 16.dp),
+                    )
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .height(24.dp)
+                            .focusRequester(seekFocus)
+                            .onFocusChanged { seekFocused = it.isFocused }
+                            .focusable(),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        val h = if (seekFocused) 6.dp else 3.dp
+                        Box(Modifier.fillMaxWidth().height(h).background(Color(0x66FFFFFF), RoundedCornerShape(3.dp))) {
+                            Box(Modifier.fillMaxWidth(frac).height(h).background(Accent, RoundedCornerShape(3.dp)))
+                        }
+                        if (seekFocused) {
+                            // Playhead knob
+                            Row(Modifier.fillMaxWidth()) {
+                                Spacer(Modifier.fillMaxWidth(frac.coerceAtMost(0.995f)))
+                                Box(Modifier.padding(start = 0.dp).size(16.dp).background(Accent, CircleShape))
+                            }
                         }
                     }
-                    Row(
-                        Modifier.align(Alignment.CenterEnd),
-                        horizontalArrangement = Arrangement.spacedBy(18.dp),
-                        verticalAlignment = Alignment.Top,
+                    Text(
+                        if (length > 0) clock(length - shown) else "",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(start = 16.dp),
+                    )
+                }
+                // Quick language choices, then the full menus.
+                Row(
+                    Modifier.padding(start = 78.dp, top = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    languageChips().forEach { c ->
+                        val selected = (c.audioId < 0 || c.audioId == currentAudio) && c.sub?.key == selectedSub
+                        LangPill((if (selected) "✓  " else "") + c.label, selected, onClick = { applyChip(c) })
+                    }
+                    LangPill("Other…", false, onClick = { picker = "subs" })
+                    Surface(
+                        onClick = { picker = "style" },
+                        modifier = Modifier.size(40.dp),
+                        shape = ClickableSurfaceDefaults.shape(shape = CircleShape),
+                        colors = ClickableSurfaceDefaults.colors(
+                            containerColor = Color(0x40FFFFFF),
+                            contentColor = Color.White,
+                            focusedContainerColor = Color.White,
+                            focusedContentColor = Color.Black,
+                        ),
+                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.1f),
                     ) {
-                        PlayerButton(PlayerIcons.Subtitles, "Subtitles", onClick = { picker = "subs" })
-                        PlayerButton(PlayerIcons.Audio, "Audio", onClick = { picker = "audio" })
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Icon(PlayerIcons.Settings, contentDescription = "Subtitle appearance", modifier = Modifier.size(22.dp))
+                        }
                     }
                 }
-                Text(
-                    "Left/right: skip 10s, hold to scrub faster. OK: pause. Down: buttons.",
-                    color = TextFaint,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
             }
+        }
+    }
+
+    /** Outline icon for the top row; its name shows underneath while it's highlighted. */
+    @Composable
+    private fun TopIcon(icon: ImageVector, label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+        var focused by remember { mutableStateOf(false) }
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(84.dp)) {
+            Surface(
+                onClick = onClick,
+                modifier = modifier.size(52.dp).onFocusChanged { focused = it.isFocused },
+                shape = ClickableSurfaceDefaults.shape(shape = CircleShape),
+                colors = ClickableSurfaceDefaults.colors(
+                    containerColor = Color.Transparent,
+                    contentColor = Color(0xE6FFFFFF),
+                    focusedContainerColor = Color(0x33FFFFFF),
+                    focusedContentColor = Color.White,
+                ),
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.15f),
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = label, modifier = Modifier.size(32.dp))
+                }
+            }
+            Text(
+                if (focused) label.uppercase() else "",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                modifier = Modifier.padding(top = 8.dp).height(18.dp),
+            )
+        }
+    }
+
+    @Composable
+    private fun LangPill(text: String, selected: Boolean, onClick: () -> Unit) {
+        Surface(
+            onClick = onClick,
+            shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(50)),
+            colors = ClickableSurfaceDefaults.colors(
+                containerColor = if (selected) Color(0x66FFFFFF) else Color(0x40FFFFFF),
+                contentColor = Color.White,
+                focusedContainerColor = Color.White,
+                focusedContentColor = Color.Black,
+            ),
+            scale = ClickableSurfaceDefaults.scale(focusedScale = 1.06f),
+        ) {
+            Text(
+                text,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
+            )
         }
     }
 
@@ -871,51 +1008,13 @@ class VlcPlayerActivity : ComponentActivity() {
         }
     }
 
-    @Composable
-    private fun PlayerButton(
-        icon: ImageVector,
-        label: String,
-        onClick: () -> Unit,
-        modifier: Modifier = Modifier,
-        big: Boolean = false,
-    ) {
-        var focused by remember { mutableStateOf(false) }
-        val size = if (big) 68.dp else 52.dp
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Surface(
-                onClick = onClick,
-                modifier = modifier
-                    .size(size)
-                    .onFocusChanged { focused = it.isFocused },
-                shape = ClickableSurfaceDefaults.shape(shape = CircleShape),
-                colors = ClickableSurfaceDefaults.colors(
-                    containerColor = if (big) Accent else Color(0x33FFFFFF),
-                    contentColor = if (big) Color.Black else Color.White,
-                    focusedContainerColor = Color.White,
-                    focusedContentColor = Color.Black,
-                ),
-                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.1f),
-            ) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Icon(icon, contentDescription = label, modifier = Modifier.size(if (big) 36.dp else 26.dp))
-                }
-            }
-            Text(
-                label,
-                fontSize = 12.sp,
-                color = if (focused) Color.White else TextDim,
-                modifier = Modifier.padding(top = 6.dp),
-            )
-        }
-    }
-
     /**
      * Stremio-style subtitle menu: languages on the left, the subtitles for
      * that language on the right (inside the video and from your addons),
      * and delay, size, colour and background underneath.
      */
     @Composable
-    private fun SubtitlePanel() {
+    private fun SubtitlePanel(styleOnly: Boolean = false) {
         val options = subOptions()
         val byLang = options.groupBy { it.language }
         val preferred = listOfNotNull(
@@ -939,11 +1038,16 @@ class VlcPlayerActivity : ComponentActivity() {
                     .background(Panel)
                     .padding(horizontal = 28.dp, vertical = 24.dp),
             ) {
-                Text("Subtitles", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                if (!addonSubsLoaded) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (styleOnly) "Subtitle appearance" else "Subtitles", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.weight(1f))
+                    if (!styleOnly) Pill("Audio tracks", false, { picker = "audio" })
+                }
+                if (!styleOnly && !addonSubsLoaded) {
                     Text("Searching your subtitle addons…", color = TextDim, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
                 }
-                Row(Modifier.weight(1f).padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                if (styleOnly) Spacer(Modifier.height(12.dp))
+                if (!styleOnly) Row(Modifier.weight(1f).padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     // Languages
                     LazyColumn(Modifier.width(220.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         item(key = "off") {
