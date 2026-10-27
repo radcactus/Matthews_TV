@@ -146,6 +146,7 @@ fun DetailScreen(seed: MetaPreview, onOpen: (MetaPreview) -> Unit) {
             nextVideoId = next?.id,
             nextLabel = next?.label,
             startMs = if (resume.first == videoId || (!isSeries && resume.first == null)) resume.second else 0L,
+            episodeTitle = (video?.title ?: video?.name)?.takeIf { it.isNotBlank() },
         )
     }
 

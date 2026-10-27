@@ -99,6 +99,14 @@ data class Stream(
     val info: String get() = (description ?: title).orEmpty()
 }
 
+/** A subtitle file from a subtitles addon (OpenSubtitles etc.). */
+@Serializable
+data class SubtitleFile(
+    val id: String = "",
+    val url: String,
+    val lang: String = "",
+)
+
 @Serializable
 data class StreamHints(
     val bingeGroup: String? = null,

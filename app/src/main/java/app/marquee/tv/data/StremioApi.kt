@@ -100,6 +100,14 @@ object AddonClient {
         return runCatching { Http.json.decodeFromJsonElement(MetaDetail.serializer(), m) }.getOrNull()
     }
 
+    suspend fun subtitles(addon: Addon, type: String, videoId: String): List<SubtitleFile> {
+        val res = Http.get("${addon.base}/subtitles/$type/${enc(videoId)}.json") as? JsonObject
+            ?: return emptyList()
+        return res.arr("subtitles")?.mapNotNull { el ->
+            runCatching { Http.json.decodeFromJsonElement(SubtitleFile.serializer(), el) }.getOrNull()
+        }.orEmpty()
+    }
+
     suspend fun streams(addon: Addon, type: String, videoId: String): List<Stream> {
         val res = Http.get("${addon.base}/stream/$type/${enc(videoId)}.json") as? JsonObject
             ?: return emptyList()

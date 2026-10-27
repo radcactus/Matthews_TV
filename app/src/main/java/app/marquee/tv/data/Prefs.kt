@@ -41,6 +41,26 @@ class Prefs(context: Context) {
             ?: "vlc"
         set(v) = sp.edit().putString("playerChoice", v).apply()
 
+    // ---- subtitles ----
+    /** Language you last picked (e.g. "English"); null = subtitles off. */
+    var subtitleLanguage: String?
+        get() = string("subLang")
+        set(v) = setString("subLang", v)
+
+    /** 0 small, 1 medium, 2 large, 3 extra large. */
+    var subtitleSize: Int
+        get() = sp.getInt("subSize", 1)
+        set(v) = sp.edit().putInt("subSize", v).apply()
+
+    /** 0 white, 1 yellow. */
+    var subtitleColor: Int
+        get() = sp.getInt("subColor", 0)
+        set(v) = sp.edit().putInt("subColor", v).apply()
+
+    var subtitleBackground: Boolean
+        get() = sp.getBoolean("subBg", false)
+        set(v) = sp.edit().putBoolean("subBg", v).apply()
+
     /** Test links when the streams panel opens. */
     var checkStreams: Boolean
         get() = sp.getBoolean("checkStreams", true)

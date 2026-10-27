@@ -21,6 +21,7 @@ data class PlayTarget(
     val nextVideoId: String?,
     val nextLabel: String?,
     val startMs: Long,
+    val episodeTitle: String? = null,    // "The Second Lamp"
 )
 
 enum class StreamKind { Direct, Server, External, Stremio }

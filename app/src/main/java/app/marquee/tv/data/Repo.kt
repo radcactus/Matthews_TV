@@ -7,6 +7,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -186,6 +188,19 @@ object Repo {
                 send(a to s)
             }
         }
+    }
+
+    /** Stremio's own OpenSubtitles addon, used when none of your addons serve subtitles. */
+    private const val OPENSUBTITLES = "https://opensubtitles-v3.strem.io/manifest.json"
+
+    /** Subtitles from every subtitles addon, like Stremio's subtitle menu. */
+    suspend fun subtitles(type: String, videoId: String): List<Pair<Addon, SubtitleFile>> = coroutineScope {
+        val sources = addons.value.filter { it.supports("subtitles", type, videoId) }.ifEmpty {
+            listOfNotNull(runCatching { AddonClient.manifest(OPENSUBTITLES) }.getOrNull())
+        }
+        sources.map { a ->
+            async { runCatching { AddonClient.subtitles(a, type, videoId) }.getOrDefault(emptyList()).map { a to it } }
+        }.awaitAll().flatten().distinctBy { it.second.url }
     }
 
     fun streamSourceCount(type: String, videoId: String) =

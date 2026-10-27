@@ -14,12 +14,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,6 +59,7 @@ import app.marquee.tv.data.Repo
 import app.marquee.tv.data.Stream
 import app.marquee.tv.data.StreamChecker
 import app.marquee.tv.data.StreamQuality
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private val Good = Color(0xFF66BB6A)
@@ -83,8 +86,9 @@ fun StreamsPanel(target: PlayTarget, onDismiss: () -> Unit) {
     val total = remember(target.videoId) { Repo.streamSourceCount(target.type, target.videoId) }
     var showBroken by remember(target.videoId) { mutableStateOf(false) }
 
-    // Once the user starts moving through the list, stop reordering under them.
-    var frozen by remember(target.videoId) { mutableStateOf<List<String>?>(null) }
+    // After the user starts moving through the list, stop jumping focus to the top.
+    var userMoved by remember(target.videoId) { mutableStateOf(false) }
+    var focusedIndex by remember(target.videoId) { mutableIntStateOf(0) }
     val headerFocus = remember { FocusRequester() }
     val rowFocus = remember(target.videoId) { mutableMapOf<String, FocusRequester>() }
     var focusedRow by remember(target.videoId) { mutableStateOf<String?>(null) }
@@ -117,36 +121,32 @@ fun StreamsPanel(target: PlayTarget, onDismiss: () -> Unit) {
         done = true
     }
 
-    /** 0 = playable (verified, or cached/seeded per the addon), 1 = unknown yet, 2 = uncached, 3 = broken. */
-    fun tier(e: Entry): Int {
-        val h = health[e.healthKey] ?: Health.Checking
-        return when {
-            h is Health.Ok || h is Health.Likely -> 0
-            h == Health.Checking -> if (StreamChecker.looksCached(e.stream)) 0 else 1
-            h == Health.Uncached -> 2
-            h is Health.Broken -> 3
-            else -> 1
-        }
+    /**
+     * 0 = playable or still being checked, 1 = not cached on debrid, 2 = broken.
+     * Links still being checked rank with the working ones, so the order
+     * is decided by quality, not by which check happened to finish first.
+     */
+    fun tier(e: Entry): Int = when (health[e.healthKey]) {
+        is Health.Broken -> 2
+        Health.Uncached -> 1
+        else -> 0
     }
 
-    // Within each tier: best picture first, then best compression at that picture.
-    val live = entries.sortedWith(
+    // Resolution first (2160p, 1080p, 720p…), then compression within each
+    // resolution (AV1, HEVC, VP9, H.264, older), then source.
+    val ordered = entries.sortedWith(
         compareBy<Entry>(
             { tier(it) },
             { if (it.decodable) 0 else 1 },                          // codecs this TV can't decode go last
             { if (it.quality.source == Source.CAM) 1 else 0 },        // camera recordings go last
-            { -DeviceCaps.effectiveHeight(it.quality.height) },       // 2160p, 1080p, 720p…
+            { -it.quality.height },                                   // 2160p, 1080p, 720p…
             { it.quality.codec.rank },                                // AV1, HEVC, VP9, H.264…
             { it.quality.source.rank },                               // Remux, BluRay, WEB-DL…
-            { if (health[it.healthKey] is Health.Ok) 0 else 1 },      // verified before assumed
+            { if (health[it.healthKey] is Health.Ok) 0 else 1 },      // verified before not-yet-checked
             { it.addonIndex },
             { it.position },
         ),
     )
-    val ordered = frozen?.let { keys ->
-        val byKey = live.associateBy { it.key }
-        keys.mapNotNull { byKey[it] } + live.filter { it.key !in keys }
-    } ?: live
     val broken = ordered.filter { health[it.healthKey] is Health.Broken }
     val visible = if (showBroken) ordered else ordered.filter { health[it.healthKey] !is Health.Broken }
 
@@ -155,9 +155,19 @@ fun StreamsPanel(target: PlayTarget, onDismiss: () -> Unit) {
 
     // Keep focus on the best link until the user takes over.
     val best = visible.firstOrNull()?.key
-    LaunchedEffect(best, frozen == null) {
-        if (frozen == null && best != null) {
+    LaunchedEffect(best, userMoved) {
+        if (!userMoved && best != null) {
             runCatching { rowFocus[best]?.requestFocus() }
+        }
+    }
+    // If the highlighted link turns out broken and drops out, move to the one now in its place.
+    val visibleKeys = visible.map { it.key }
+    LaunchedEffect(visibleKeys) {
+        val f = focusedRow ?: return@LaunchedEffect
+        if (f !in visibleKeys && visibleKeys.isNotEmpty()) {
+            val k = visibleKeys[focusedIndex.coerceIn(0, visibleKeys.lastIndex)]
+            delay(30)
+            runCatching { rowFocus[k]?.requestFocus() }
         }
     }
 
@@ -204,15 +214,13 @@ fun StreamsPanel(target: PlayTarget, onDismiss: () -> Unit) {
                     modifier = Modifier
                         .fillMaxSize()
                         .onPreviewKeyEvent { ev ->
-                            if (ev.type == KeyEventType.KeyDown && frozen == null && focusedRow != null) {
-                                frozen = ordered.map { it.key }
-                            }
+                            if (ev.type == KeyEventType.KeyDown && focusedRow != null) userMoved = true
                             false
                         },
                     contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 60.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    items(visible, key = { it.key }) { e ->
+                    itemsIndexed(visible, key = { _, e -> e.key }) { index, e ->
                         val req = rowFocus.getOrPut(e.key) { FocusRequester() }
                         StreamRow(
                             stream = e.stream,
@@ -222,7 +230,7 @@ fun StreamsPanel(target: PlayTarget, onDismiss: () -> Unit) {
                             health = health[e.healthKey] ?: Health.Checking,
                             modifier = Modifier
                                 .focusRequester(req)
-                                .onFocusChanged { if (it.isFocused) focusedRow = e.key },
+                                .onFocusChanged { if (it.isFocused) { focusedRow = e.key; focusedIndex = index } },
                             onClick = {
                                 if (Playback.usesPlayer(e.stream) && Repo.prefs.playerChoice == PlayerChoice.ASK) {
                                     picking = e
@@ -240,10 +248,7 @@ fun StreamsPanel(target: PlayTarget, onDismiss: () -> Unit) {
                                 Pill(
                                     if (showBroken) "Hide ${broken.size} broken links" else "Show ${broken.size} broken links",
                                     selected = false,
-                                    onClick = {
-                                        frozen = ordered.map { it.key }
-                                        showBroken = !showBroken
-                                    },
+                                    onClick = { showBroken = !showBroken },
                                 )
                             }
                         }
