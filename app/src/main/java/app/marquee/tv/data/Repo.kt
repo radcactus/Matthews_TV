@@ -14,7 +14,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.JsonArray
@@ -64,9 +66,15 @@ object Repo {
     /** Rows that may repeat titles shown elsewhere (they're your own lists). */
     private val exemptFromDedupe = setOf("continue", "library", "watched")
 
+    private lateinit var homeFile: java.io.File
+    @Volatile private var firstLoadDone = false
+    private val publishPending = java.util.concurrent.atomic.AtomicBoolean(false)
+
     fun init(context: Context) {
+        homeFile = java.io.File(context.filesDir, "home.json")
         prefs = Prefs(context)
-        DeviceCaps.init(context)
+        Tmdb.init(context)
+        scope.launch { DeviceCaps.init(context) }     // lists the TV's decoders; slow-ish, off the main thread
         WatchStore.init(context)
         WatchNext.init(context)
         signedIn.value = prefs.authKey != null
@@ -74,7 +82,14 @@ object Repo {
         prefs.addonsJson?.let { json ->
             runCatching { addons.value = parseCollection(Http.json.parseToJsonElement(json) as JsonArray) }
         }
-        refresh()
+        scope.launch {
+            // Show last time's Home straight away while fresh rows load.
+            runCatching {
+                val saved = Http.json.decodeFromString(ListSerializer(HomeRow.serializer()), homeFile.readText())
+                home.value = listOf(continueWatching()).filter { it.items.isNotEmpty() } + saved.filter { it.key != "continue" }
+            }
+            refresh()
+        }
     }
 
     // ---- account & sync ---------------------------------------------------
@@ -235,7 +250,21 @@ object Repo {
      * to bottom. Your own lists (Continue watching, Watch again, Library) are
      * left whole. Rows left with only a handful of titles are dropped.
      */
+    /**
+     * Rows arrive one by one from many sources; batch them so the screen
+     * redraws a few times instead of dozens. Until the first load finishes
+     * (or 4 seconds pass), the saved Home from last time stays up.
+     */
     private fun publish() {
+        if (!publishPending.compareAndSet(false, true)) return
+        scope.launch {
+            delay(120)
+            publishPending.set(false)
+            if (firstLoadDone || home.value.isEmpty()) publishNow()
+        }
+    }
+
+    private fun publishNow() {
         val seen = HashSet<String>()
         val rows = mutableListOf<HomeRow>()
         for (row in homeSlots.values.distinctBy { it.key }) {
@@ -297,7 +326,19 @@ object Repo {
 
         val lib = library.value.filter { it.inLibrary }.sortedByDescending { it.mtime }.take(40)
         putHomeRow(SLOT_LIBRARY, HomeRow("library", "Your library", lib.map { RowItem(it.preview()) }))
+        val reveal = launch {
+            delay(4_000)
+            firstLoadDone = true
+            publishNow()
+        }
         jobs.joinAll()
+        reveal.cancel()
+        firstLoadDone = true
+        publishNow()
+        // Remember this Home for an instant start next time.
+        runCatching {
+            homeFile.writeText(Http.json.encodeToString(ListSerializer(HomeRow.serializer()), home.value))
+        }
     }
 
     fun catalogsForSettings(): List<Pair<Addon, CatalogDef>> =

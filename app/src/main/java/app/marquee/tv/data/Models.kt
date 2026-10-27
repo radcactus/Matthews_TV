@@ -242,12 +242,14 @@ data class Progress(
 
 // ---- UI-facing rows ------------------------------------------------------
 
+@Serializable
 data class RowItem(
     val meta: MetaPreview,
     val progress: Float? = null,
     val caption: String? = null,
 )
 
+@Serializable
 data class HomeRow(val key: String, val title: String, val items: List<RowItem>)
 
 fun episodeLabel(videoId: String?): String? {

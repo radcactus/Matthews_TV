@@ -3,6 +3,7 @@ package app.marquee.tv.data
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.JsonObject
@@ -21,6 +22,32 @@ object Tmdb {
     private val recCache = ConcurrentHashMap<String, List<MetaPreview>>()
     private val gate = Semaphore(6)
 
+    // The TMDB <-> IMDb id pairs never change, so they're saved between launches.
+    private lateinit var idPrefs: android.content.SharedPreferences
+    private val savePending = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    fun init(context: android.content.Context) {
+        idPrefs = context.getSharedPreferences("tmdb_ids", android.content.Context.MODE_PRIVATE)
+        idPrefs.all.forEach { (k, v) ->
+            when {
+                k.startsWith("i:") && v is String -> imdbCache[k.removePrefix("i:")] = v
+                k.startsWith("t:") && v is Int -> tmdbCache[k.removePrefix("t:")] = v
+            }
+        }
+    }
+
+    private fun scheduleSave() {
+        if (!::idPrefs.isInitialized || !savePending.compareAndSet(false, true)) return
+        Repo.scope.launch {
+            kotlinx.coroutines.delay(5_000)
+            savePending.set(false)
+            idPrefs.edit().apply {
+                imdbCache.forEach { (k, v) -> putString("i:$k", v) }
+                tmdbCache.forEach { (k, v) -> putInt("t:$k", v) }
+            }.apply()
+        }
+    }
+
     private suspend fun get(key: String, path: String): JsonObject? {
         val bearer = key.startsWith("eyJ")
         val sep = if (path.contains("?")) "&" else "?"
@@ -37,6 +64,7 @@ object Tmdb {
         val list = if (type == "series") r.arr("tv_results") else r.arr("movie_results")
         val id = (list?.firstOrNull() as? JsonObject)?.long("id")?.toInt() ?: return null
         tmdbCache[imdbId] = id
+        scheduleSave()
         return id
     }
 
@@ -46,6 +74,7 @@ object Tmdb {
         val r = get(key, "/$k/external_ids") ?: return null
         val imdb = r.str("imdb_id")?.takeIf { it.startsWith("tt") } ?: return null
         imdbCache[k] = imdb
+        scheduleSave()
         return imdb
     }
 

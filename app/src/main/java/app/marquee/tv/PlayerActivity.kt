@@ -62,7 +62,9 @@ class PlayerActivity : ComponentActivity() {
         val values = intent.getStringArrayExtra(EXTRA_HEADER_VALUES).orEmpty()
         val headers = keys.zip(values).toMap()
 
-        val dataSource = OkHttpDataSource.Factory(Http.client).setDefaultRequestProperties(headers)
+        // Never send video through the app's HTTP disk cache.
+        val dataSource = OkHttpDataSource.Factory(Http.client.newBuilder().cache(null).build())
+            .setDefaultRequestProperties(headers)
         // If the first hardware decoder fails, try the next one before giving up.
         val renderers = DefaultRenderersFactory(this).setEnableDecoderFallback(true)
 

@@ -111,7 +111,7 @@ fun MarqueeApp() {
             saved.SaveableStateProvider(tab.name) {
                 Box(Modifier.fillMaxSize().padding(start = RailCollapsed)) {
                     when (tab) {
-                        Tab.Home -> HomeScreen(onOpen = ::open, overlayOpen = false)
+                        Tab.Home -> HomeScreen(onOpen = ::open)
                         Tab.Browse -> BrowseScreen(onOpen = ::open)
                         Tab.Search -> SearchScreen(onOpen = ::open)
                         Tab.Library -> LibraryScreen(onOpen = ::open)

@@ -23,10 +23,23 @@ import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 object Http {
-    val client: OkHttpClient = OkHttpClient.Builder()
+    /**
+     * One shared client for the whole app (addons, Stremio, TMDB, images,
+     * the players), so connections are reused. After [init] it also keeps a
+     * 50 MB disk cache, which makes catalogs and artwork load instantly on
+     * the next launch.
+     */
+    var client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
         .build()
+        private set
+
+    fun init(context: android.content.Context) {
+        client = client.newBuilder()
+            .cache(okhttp3.Cache(java.io.File(context.cacheDir, "http"), 50L * 1024 * 1024))
+            .build()
+    }
 
     val json = Json {
         ignoreUnknownKeys = true
@@ -34,10 +47,12 @@ object Http {
         coerceInputValues = true
     }
 
-    suspend fun get(url: String, headers: Map<String, String> = emptyMap()): JsonElement =
+    /** [fresh] skips the disk cache (stream links must never be stale). */
+    suspend fun get(url: String, headers: Map<String, String> = emptyMap(), fresh: Boolean = false): JsonElement =
         withContext(Dispatchers.IO) {
             val req = Request.Builder().url(url).apply {
                 headers.forEach { (k, v) -> header(k, v) }
+                if (fresh) cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
             }.build()
             client.newCall(req).execute().use { res ->
                 if (!res.isSuccessful) throw IOException("HTTP ${res.code}")

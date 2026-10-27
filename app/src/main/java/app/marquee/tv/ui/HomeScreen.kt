@@ -30,7 +30,7 @@ import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-fun HomeScreen(onOpen: (MetaPreview) -> Unit, overlayOpen: Boolean) {
+fun HomeScreen(onOpen: (MetaPreview) -> Unit) {
     val rows by Repo.home.collectAsState()
     val loading by Repo.loading.collectAsState()
     val error by Repo.error.collectAsState()
@@ -51,8 +51,8 @@ fun HomeScreen(onOpen: (MetaPreview) -> Unit, overlayOpen: Boolean) {
             heroRuntime = runtimeLabel(m)
         }
     }
-    LaunchedEffect(rows.isNotEmpty(), overlayOpen) {
-        if (!initialFocusDone && !overlayOpen && rows.isNotEmpty()) {
+    LaunchedEffect(rows.isNotEmpty()) {
+        if (!initialFocusDone && rows.isNotEmpty()) {
             val first = rows.first()
             first.items.firstOrNull()?.let { FocusMemory.pending = "${first.key}/${it.meta.id}" }
             initialFocusDone = true

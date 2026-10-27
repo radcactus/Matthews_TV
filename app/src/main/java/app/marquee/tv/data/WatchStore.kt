@@ -55,6 +55,9 @@ object WatchStore {
     private var data = WatchData()
     private var stremioMovies: Set<String> = emptySet()
 
+    /** isWatched() answers, cleared on every change (it's asked for every poster on screen). */
+    private val watchedMemo = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
     /** Bumped on every change so the UI redraws tags and rows. */
     var version by mutableIntStateOf(0)
         private set
@@ -70,6 +73,7 @@ object WatchStore {
         synchronized(this) {
             data = change(data)
             sp.edit().putString(KEY, Http.json.encodeToString(WatchData.serializer(), data)).apply()
+            watchedMemo.clear()
         }
         version++
     }
@@ -78,6 +82,7 @@ object WatchStore {
     fun setStremioWatched(library: List<LibItem>) {
         stremioMovies = library.filter { it.type == "movie" && (it.timesWatched > 0 || it.flaggedWatched) }
             .map { it.id }.toSet()
+        watchedMemo.clear()
         version++
     }
 
@@ -153,7 +158,9 @@ object WatchStore {
             v.split(":").let { p -> p.size >= 3 && (p[p.size - 2].toIntOrNull() ?: 0) > 0 }
         }
 
-    fun isWatched(id: String, type: String): Boolean = when {
+    fun isWatched(id: String, type: String): Boolean = watchedMemo.getOrPut("$type/$id") { computeWatched(id, type) }
+
+    private fun computeWatched(id: String, type: String): Boolean = when {
         type == "movie" -> data.movies.containsKey(id) || id in stremioMovies
         data.seriesMarked.containsKey(id) -> true
         else -> data.seriesTotals[id]?.let { total -> total > 0 && regularEpisodesWatched(id) >= total } ?: false

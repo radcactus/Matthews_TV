@@ -109,7 +109,7 @@ object AddonClient {
     }
 
     suspend fun streams(addon: Addon, type: String, videoId: String): List<Stream> {
-        val res = Http.get("${addon.base}/stream/$type/${enc(videoId)}.json") as? JsonObject
+        val res = Http.get("${addon.base}/stream/$type/${enc(videoId)}.json", fresh = true) as? JsonObject
             ?: return emptyList()
         return res.arr("streams")?.mapNotNull { el ->
             runCatching { Http.json.decodeFromJsonElement(Stream.serializer(), el) }.getOrNull()

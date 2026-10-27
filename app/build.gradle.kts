@@ -41,7 +41,11 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 strips unused code and optimizes the rest: a smaller APK and
+            // noticeably smoother Compose UI on TV hardware.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Local builds without the secret fall back to the debug key.
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }

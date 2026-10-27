@@ -6,15 +6,37 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import app.marquee.tv.data.MetaPreview
+import app.marquee.tv.data.Http
 import app.marquee.tv.data.Repo
+import coil3.ImageLoader
+import coil3.PlatformContext
+import coil3.SingletonImageLoader
+import coil3.disk.DiskCache
+import coil3.memory.MemoryCache
+import coil3.network.okhttp.OkHttpNetworkFetcherFactory
+import okio.Path.Companion.toOkioPath
 import app.marquee.tv.ui.MarqueeApp
 import app.marquee.tv.ui.MarqueeTheme
 
-class MarqueeApplication : Application() {
+class MarqueeApplication : Application(), SingletonImageLoader.Factory {
     override fun onCreate() {
         super.onCreate()
+        Http.init(this)
         Repo.init(this)
     }
+
+    /** Posters and backdrops: shared connections, a quarter of memory, 300 MB on disk. */
+    override fun newImageLoader(context: PlatformContext): ImageLoader =
+        ImageLoader.Builder(context)
+            .components { add(OkHttpNetworkFetcherFactory(callFactory = { Http.client })) }
+            .memoryCache { MemoryCache.Builder().maxSizePercent(context, 0.25).build() }
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(context.cacheDir.resolve("images").toOkioPath())
+                    .maxSizeBytes(300L * 1024 * 1024)
+                    .build()
+            }
+            .build()
 }
 
 class MainActivity : ComponentActivity() {

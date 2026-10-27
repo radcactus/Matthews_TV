@@ -1,10 +1,8 @@
 package app.marquee.tv.data
 
 import android.content.Context
-import android.hardware.display.DisplayManager
 import android.media.MediaCodecList
 import android.os.Build
-import android.view.Display
 import java.util.Locale
 
 /**
@@ -133,27 +131,13 @@ object StreamQuality {
 }
 
 /**
- * What this TV can actually show and decode, so sorting doesn't put a stream
- * on top that the TV can't play smoothly.
+ * Which video codecs this TV can decode in hardware, so a stream it can't
+ * play smoothly doesn't end up at the top of the list.
  */
 object DeviceCaps {
-    /** Tallest display mode the TV offers (2160 on a 4K set), 0 if unknown. */
-    var maxHeight = 0
-        private set
     private var hardwareMimes: Set<String>? = null
 
     fun init(context: Context) {
-        runCatching {
-            val dm = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-            val display = dm.getDisplay(Display.DEFAULT_DISPLAY)
-            maxHeight = if (Build.VERSION.SDK_INT >= 23) {
-                display.supportedModes.maxOf { minOf(it.physicalWidth, it.physicalHeight) }
-            } else {
-                val p = android.graphics.Point()
-                @Suppress("DEPRECATION") display.getRealSize(p)
-                minOf(p.x, p.y)
-            }
-        }
         runCatching {
             hardwareMimes = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
                 .filter { !it.isEncoder && isHardware(it) }
@@ -178,7 +162,4 @@ object DeviceCaps {
         if (c == Codec.AVC) return true   // every TV decodes H.264
         return mime in mimes
     }
-
-    /** A 4K stream on a 1080p TV looks no better than 1080p, so rank it as 1080p. */
-    fun effectiveHeight(h: Int): Int = if (maxHeight in 1 until h) maxHeight else h
 }
