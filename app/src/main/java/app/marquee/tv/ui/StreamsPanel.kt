@@ -54,11 +54,11 @@ import app.marquee.tv.data.Addon
 import app.marquee.tv.data.DeviceCaps
 import app.marquee.tv.data.Health
 import app.marquee.tv.data.Quality
-import app.marquee.tv.data.Source
 import app.marquee.tv.data.Repo
 import app.marquee.tv.data.Stream
 import app.marquee.tv.data.StreamChecker
 import app.marquee.tv.data.StreamQuality
+import app.marquee.tv.data.StreamRank
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -69,6 +69,7 @@ private class Entry(val key: String, val addon: Addon, val addonIndex: Int, val 
     val healthKey = StreamChecker.key(stream)
     val quality = StreamQuality.parse(stream)
     val decodable = DeviceCaps.canDecode(quality.codec)
+    val rank = StreamRank.qualityKey(quality, decodable)
 }
 
 /**
@@ -137,11 +138,7 @@ fun StreamsPanel(target: PlayTarget, onDismiss: () -> Unit) {
     val ordered = entries.sortedWith(
         compareBy<Entry>(
             { tier(it) },
-            { if (it.decodable) 0 else 1 },                          // codecs this TV can't decode go last
-            { if (it.quality.source == Source.CAM) 1 else 0 },        // camera recordings go last
-            { -it.quality.height },                                   // 2160p, 1080p, 720p…
-            { it.quality.codec.rank },                                // AV1, HEVC, VP9, H.264…
-            { it.quality.source.rank },                               // Remux, BluRay, WEB-DL…
+            { it.rank },                                              // see StreamRank.qualityKey
             { if (health[it.healthKey] is Health.Ok) 0 else 1 },      // verified before not-yet-checked
             { it.addonIndex },
             { it.position },

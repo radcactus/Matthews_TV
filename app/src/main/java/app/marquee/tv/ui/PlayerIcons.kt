@@ -20,6 +20,7 @@ object PlayerIcons {
     val Pause = icon("Pause", "M6 19h4V5H6v14zm8-14v14h4V5h-4z")
     val Rewind = icon("Rewind", "M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z")
     val Forward = icon("Forward", "M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z")
+    val Next = icon("Next", "M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z")
     val StartOver = icon(
         "StartOver",
         "M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z",

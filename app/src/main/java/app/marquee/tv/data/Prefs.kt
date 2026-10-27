@@ -41,6 +41,11 @@ class Prefs(context: Context) {
             ?: "vlc"
         set(v) = sp.edit().putString("playerChoice", v).apply()
 
+    /** Play the next episode automatically when the credits start. */
+    var autoplayNext: Boolean
+        get() = sp.getBoolean("autoplayNext", true)
+        set(v) = sp.edit().putBoolean("autoplayNext", v).apply()
+
     // ---- subtitles ----
     /** Language you last picked (e.g. "English"); null = subtitles off. */
     var subtitleLanguage: String?

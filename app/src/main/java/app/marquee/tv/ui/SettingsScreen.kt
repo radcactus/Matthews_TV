@@ -44,6 +44,7 @@ fun SettingsScreen(onSignIn: () -> Unit) {
     var server by remember { mutableStateOf(prefs.serverUrl.orEmpty()) }
     var sync by remember { mutableStateOf(prefs.syncProgress) }
     var playerChoice by remember { mutableStateOf(prefs.playerChoice) }
+    var autoplayNext by remember { mutableStateOf(prefs.autoplayNext) }
     val ctx = LocalContext.current
     val installedPlayers = remember { ExternalPlayer.installed(ctx) }
     var check by remember { mutableStateOf(prefs.checkStreams) }
@@ -106,6 +107,13 @@ fun SettingsScreen(onSignIn: () -> Unit) {
                 desc = "Off by default: testing an uncached link makes your debrid service start downloading it.",
                 on = probeUncached,
             ) { probeUncached = !probeUncached; prefs.probeUncached = probeUncached }
+        }
+        item {
+            Toggle(
+                title = "Autoplay next episode",
+                desc = "When the credits start, a 15-second countdown plays the next episode with the best working link. Press Back or \"Watch credits\" to stay.",
+                on = autoplayNext,
+            ) { autoplayNext = !autoplayNext; prefs.autoplayNext = autoplayNext }
         }
         item {
             Note("Player. Both players are built into Matthews TV, so nothing opens another app. VLC plays almost any file; ExoPlayer is Android's own engine. If one can't start a file, Matthews TV tries the other automatically. Long-press any stream to pick a player just for that one. Video apps installed on this TV are listed too, if you ever want them.")

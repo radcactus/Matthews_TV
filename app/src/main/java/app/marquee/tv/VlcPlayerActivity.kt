@@ -57,7 +57,9 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import app.marquee.tv.data.Progress
 import app.marquee.tv.data.Repo
+import app.marquee.tv.data.Stream
 import app.marquee.tv.data.StreamChecker
+import app.marquee.tv.data.StreamRank
 import app.marquee.tv.data.SubtitleFile
 import app.marquee.tv.ui.Accent
 import app.marquee.tv.ui.ActionButton
@@ -68,7 +70,9 @@ import app.marquee.tv.ui.PlayerIcons
 import app.marquee.tv.ui.Raised
 import app.marquee.tv.ui.TextDim
 import app.marquee.tv.ui.TextFaint
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -138,6 +142,16 @@ class VlcPlayerActivity : ComponentActivity() {
     private var restoreSub: String? = null
     private var autoPicked = false
 
+    // ---- next episode / autoplay
+    private var autoplay = true
+    private var nextTarget by mutableStateOf<PlayTarget?>(null)
+    private var creditsAt = Long.MAX_VALUE
+    private var nextUpShown by mutableStateOf(false)
+    private var nextUpDismissed = false
+    private var countdown by mutableIntStateOf(COUNTDOWN_SECONDS)
+    private var switching by mutableStateOf(false)
+    private var nextStream: Deferred<Stream?>? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -154,6 +168,10 @@ class VlcPlayerActivity : ComponentActivity() {
         subSize = prefs.subtitleSize
         subColor = prefs.subtitleColor
         subBackground = prefs.subtitleBackground
+        autoplay = prefs.autoplayNext
+        if (target.nextVideoId != null) {
+            lifecycleScope.launch { nextTarget = runCatching { buildNextTarget() }.getOrNull() }
+        }
 
         videoLayout = VLCVideoLayout(this)
         buildPlayer(target.startMs)
@@ -226,13 +244,20 @@ class VlcPlayerActivity : ComponentActivity() {
                     if (subDelayMs != 0L) mp.setSpuDelay(subDelayMs * 1000)
                 }
                 MediaPlayer.Event.Paused, MediaPlayer.Event.Stopped -> playing = false
-                MediaPlayer.Event.TimeChanged -> position = e.timeChanged
+                MediaPlayer.Event.TimeChanged -> {
+                    position = e.timeChanged
+                    onTick(position)
+                }
                 MediaPlayer.Event.LengthChanged -> length = e.lengthChanged
                 MediaPlayer.Event.Buffering -> buffering = e.buffering
                 MediaPlayer.Event.ESAdded, MediaPlayer.Event.ESDeleted -> onTracksChanged()
                 MediaPlayer.Event.EndReached -> {
-                    save(finishedOverride = true)
-                    finish()
+                    if (nextTarget != null && autoplay && !nextUpDismissed) {
+                        goToNext(ended = true)
+                    } else {
+                        save(finishedOverride = true)
+                        finish()
+                    }
                 }
                 MediaPlayer.Event.EncounteredError -> onPlaybackError()
             }
@@ -302,6 +327,7 @@ class VlcPlayerActivity : ComponentActivity() {
 
     private fun save(sync: Boolean = true, finishedOverride: Boolean = false) {
         if (handedOff || !::mp.isInitialized) return
+        if (switching && !finishedOverride) return     // moving on to the next episode
         val pos = runCatching { mp.time }.getOrDefault(position)
         val dur = runCatching { mp.length }.getOrDefault(length)
         if (dur <= 0 && !finishedOverride) return
@@ -417,6 +443,100 @@ class VlcPlayerActivity : ComponentActivity() {
             ?.replaceFirstChar { it.uppercase() } ?: "Other"
     }
 
+    // ---- next episode ---------------------------------------------------------
+
+    /** The episode after this one (with its own next episode), if it's out. */
+    private suspend fun buildNextTarget(): PlayTarget? {
+        val nid = target.nextVideoId ?: return null
+        val eps = Repo.meta(target.type, target.id)?.episodes.orEmpty()
+        val i = eps.indexOfFirst { it.id == nid }
+        val ep = eps.getOrNull(i)
+        val released = ep?.released?.let { app.marquee.tv.data.Dates.parse(it) } ?: 0L
+        if (released > System.currentTimeMillis()) return null      // not out yet
+        val after = if (i >= 0) eps.getOrNull(i + 1)?.takeIf { (it.season ?: 0) != 0 } else null
+        return PlayTarget(
+            id = target.id,
+            type = target.type,
+            videoId = nid,
+            name = target.name,
+            poster = target.poster,
+            label = ep?.label?.ifBlank { null } ?: target.nextLabel,
+            nextVideoId = after?.id,
+            nextLabel = after?.label,
+            startMs = 0,
+            episodeTitle = (ep?.title ?: ep?.name)?.takeIf { it.isNotBlank() },
+            bingeGroup = target.bingeGroup,
+        )
+    }
+
+    /**
+     * When the credits start. Uses the file's chapter markers when there's a
+     * "Credits"/"Ending"/"Outro" chapter (or a short final chapter); otherwise
+     * the last 3% of the episode, between 30 and 90 seconds.
+     */
+    private fun computeCreditsStart(): Long {
+        val len = length
+        if (len <= 0) return Long.MAX_VALUE
+        val chapters = runCatching { mp.getChapters(-1) }.getOrNull().orEmpty()
+        val creditWords = listOf("credit", "ending", "outro", "end title", "closing")
+        chapters.firstOrNull { c ->
+            val n = c.name.orEmpty().lowercase()
+            c.timeOffset > len / 2 && (creditWords.any { n.contains(it) } || n == "ed")
+        }?.let { return it.timeOffset }
+        val last = chapters.lastOrNull()
+        if (chapters.size >= 3 && last != null && last.timeOffset > len * 0.85 && (len - last.timeOffset) in 20_000L..480_000L) {
+            return last.timeOffset
+        }
+        return len - (len * 0.03).toLong().coerceIn(30_000L, 90_000L)
+    }
+
+    private fun onTick(pos: Long) {
+        val nt = nextTarget ?: return
+        if (nextUpDismissed || switching || !everPlayed) return
+        if (creditsAt == Long.MAX_VALUE && length > 0) creditsAt = computeCreditsStart()
+        // Start finding the next episode's stream a bit early so it's ready.
+        if (nextStream == null && pos >= creditsAt - 45_000) prefetchNext(nt)
+        if (autoplay && !nextUpShown && pos >= creditsAt) {
+            countdown = COUNTDOWN_SECONDS
+            nextUpShown = true
+            controlsVisible = false
+            picker = null
+        }
+    }
+
+    private fun prefetchNext(nt: PlayTarget): Deferred<Stream?> =
+        nextStream ?: lifecycleScope.async {
+            runCatching { StreamRank.bestStream(nt.type, nt.videoId, target.bingeGroup) }.getOrNull()
+        }.also { nextStream = it }
+
+    /** Plays the next episode with the best working link (same release group when possible). */
+    private fun goToNext(ended: Boolean = false) {
+        if (switching) return
+        val nt = nextTarget ?: return
+        val pos = runCatching { mp.time }.getOrDefault(position)
+        // Count this episode as watched if you were at the credits (or it ended).
+        val watchedEnough = ended || (length > 0 && pos >= minOf(creditsAt, (length * 0.92).toLong()) - 60_000)
+        switching = true
+        nextUpShown = false
+        if (watchedEnough) save(finishedOverride = true)
+        runCatching { mp.pause() }
+        lifecycleScope.launch {
+            val s = prefetchNext(nt).await()
+            val link = s?.let { Playback.urlFor(it) }
+            if (s == null || link == null) {
+                Toast.makeText(
+                    this@VlcPlayerActivity,
+                    "Couldn't find a working link for ${nt.label ?: "the next episode"}. Pick one from the episode list.",
+                    Toast.LENGTH_LONG,
+                ).show()
+                finish()
+                return@launch
+            }
+            startActivity(VlcPlayerActivity.intent(this@VlcPlayerActivity, link.first, link.second, nt.copy(bingeGroup = s.behaviorHints?.bingeGroup ?: nt.bingeGroup)))
+            finish()
+        }
+    }
+
     // ---- remote control ---------------------------------------------------
 
     private fun togglePlay() {
@@ -510,7 +630,8 @@ class VlcPlayerActivity : ComponentActivity() {
         }
         // Left/right skip whenever the controls are hidden or the progress bar
         // has focus. Press down to reach the buttons, where left/right move between them.
-        val seekMode = picker == null && (!controlsVisible || seekFocused)
+        if (switching) return true
+        val seekMode = picker == null && !nextUpShown && (!controlsVisible || seekFocused)
         if (seekMode) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_DPAD_LEFT -> return handleSeekKey(event, -1)
@@ -536,8 +657,22 @@ class VlcPlayerActivity : ComponentActivity() {
         val playFocus = remember { FocusRequester() }
         val seekFocus = remember { FocusRequester() }
 
-        BackHandler(enabled = picker != null || controlsVisible) {
-            if (picker != null) picker = null else controlsVisible = false
+        BackHandler(enabled = picker != null || controlsVisible || nextUpShown) {
+            when {
+                nextUpShown -> { nextUpShown = false; nextUpDismissed = true }
+                picker != null -> picker = null
+                else -> controlsVisible = false
+            }
+        }
+
+        // Up Next countdown; pauses while the video is paused.
+        LaunchedEffect(nextUpShown) {
+            if (!nextUpShown) return@LaunchedEffect
+            while (countdown > 0) {
+                delay(1_000)
+                if (playing) countdown--
+            }
+            goToNext()
         }
 
         // Hide the controls after 5 seconds without a key press while playing.
@@ -595,6 +730,21 @@ class VlcPlayerActivity : ComponentActivity() {
             when (picker) {
                 "subs" -> SubtitlePanel()
                 "audio" -> AudioPicker()
+            }
+
+            if (nextUpShown) {
+                nextTarget?.let { NextUpCard(it, Modifier.align(Alignment.BottomEnd)) }
+            }
+            if (switching) {
+                Text(
+                    "Loading ${nextTarget?.label ?: "next episode"}…",
+                    color = Color.White,
+                    fontSize = 18.sp,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .background(Color(0xCC000000), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                )
             }
         }
     }
@@ -665,6 +815,9 @@ class VlcPlayerActivity : ComponentActivity() {
                             modifier = Modifier.focusRequester(playFocus),
                         )
                         PlayerButton(PlayerIcons.Forward, "Forward 10s", onClick = { seekBy(10_000); interaction++ })
+                        if (nextTarget != null) {
+                            PlayerButton(PlayerIcons.Next, "Next episode", onClick = { goToNext() })
+                        }
                     }
                     Row(
                         Modifier.align(Alignment.CenterEnd),
@@ -681,6 +834,39 @@ class VlcPlayerActivity : ComponentActivity() {
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 6.dp),
                 )
+            }
+        }
+    }
+
+    @Composable
+    private fun NextUpCard(nt: PlayTarget, modifier: Modifier = Modifier) {
+        val playNow = remember { FocusRequester() }
+        LaunchedEffect(Unit) { delay(60); runCatching { playNow.requestFocus() } }
+        Column(
+            modifier
+                .padding(end = 40.dp, bottom = 48.dp)
+                .width(380.dp)
+                .background(Color(0xE6101216), RoundedCornerShape(14.dp))
+                .padding(20.dp),
+        ) {
+            Text("Up next", color = TextDim, fontSize = 12.sp)
+            Text(
+                listOfNotNull(nt.label, nt.episodeTitle).joinToString("  ·  ").ifBlank { "Next episode" },
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            Text(
+                if (playing) "Playing in $countdown" else "Paused · $countdown",
+                color = Accent,
+                fontSize = 14.sp,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+            Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                ActionButton("Play now", primary = true, onClick = { goToNext() }, modifier = Modifier.focusRequester(playNow))
+                ActionButton("Watch credits", onClick = { nextUpShown = false; nextUpDismissed = true })
             }
         }
     }
@@ -925,6 +1111,7 @@ class VlcPlayerActivity : ComponentActivity() {
 
     companion object {
         private val SPEEDS = intArrayOf(2, 4, 8, 16, 32, 64)
+        private const val COUNTDOWN_SECONDS = 15
         private const val EXTRA_URL = "url"
         private const val EXTRA_TARGET = "target"
         private const val EXTRA_HEADER_KEYS = "hk"

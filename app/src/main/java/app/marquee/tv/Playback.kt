@@ -22,6 +22,8 @@ data class PlayTarget(
     val nextLabel: String?,
     val startMs: Long,
     val episodeTitle: String? = null,    // "The Second Lamp"
+    /** The stream's release group, so autoplay can keep the next episode consistent. */
+    val bingeGroup: String? = null,
 )
 
 enum class StreamKind { Direct, Server, External, Stremio }
@@ -37,7 +39,7 @@ object Playback {
     /** Whether this stream goes to a video player (built-in or VLC etc.) at all. */
     fun usesPlayer(s: Stream) = kind(s).let { it == StreamKind.Direct || it == StreamKind.Server }
 
-    private fun urlFor(s: Stream): Pair<String, Map<String, String>>? = when (kind(s)) {
+    fun urlFor(s: Stream): Pair<String, Map<String, String>>? = when (kind(s)) {
         StreamKind.Direct -> s.url!! to s.behaviorHints?.proxyHeaders?.request.orEmpty()
         StreamKind.Server -> "${Repo.prefs.serverUrl}/${s.infoHash}/${s.fileIdx}" to emptyMap()
         else -> null
@@ -47,7 +49,8 @@ object Playback {
      * Plays a stream. [player] is a [PlayerChoice] id or an [ExternalPlayer] id;
      * null uses the default from Settings ("ask" is resolved by the UI first).
      */
-    fun play(ctx: Context, s: Stream, t: PlayTarget, player: String? = null) {
+    fun play(ctx: Context, s: Stream, target: PlayTarget, player: String? = null) {
+        val t = target.copy(bingeGroup = s.behaviorHints?.bingeGroup ?: target.bingeGroup)
         val (url, headers) = urlFor(s) ?: run {
             when (kind(s)) {
                 StreamKind.External -> open(ctx, Uri.parse(s.externalUrl ?: "https://www.youtube.com/watch?v=${s.ytId}"))
