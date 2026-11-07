@@ -1359,8 +1359,8 @@ class VlcPlayerActivity : ComponentActivity() {
                 EqRow("Treble (highs)", eqTreble) { setEq(eqBass, eqMid, it) }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 8.dp)) {
                     Text("Volume leveling", fontSize = 15.sp, modifier = Modifier.width(150.dp))
-                    Pill("Off", !leveling, { if (leveling) setLeveling(false) })
-                    Pill("On", leveling, { if (!leveling) setLeveling(true) })
+                    Pill("Off", !leveling, { if (leveling) changeLeveling(false) })
+                    Pill("On", leveling, { if (!leveling) changeLeveling(true) })
                 }
                 Text(
                     "Leveling evens out loud explosions and quiet dialogue. Turning it on or off briefly restarts the video at the same spot.",
@@ -1394,7 +1394,7 @@ class VlcPlayerActivity : ComponentActivity() {
         applyEqualizer()
     }
 
-    private fun setLeveling(on: Boolean) {
+    private fun changeLeveling(on: Boolean) {
         leveling = on
         Repo.prefs.volumeLeveling = on
         restartWithNewSubtitleStyle()
