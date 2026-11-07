@@ -40,6 +40,8 @@ private data class WatchData(
     val seriesTotals: Map<String, Int> = emptyMap(),
     /** Name, poster and genres for everything above, so rows can be drawn without a lookup. */
     val titles: Map<String, TitleInfo> = emptyMap(),
+    /** Your Watch later list: id -> title info (with when it was added). */
+    val later: Map<String, TitleInfo> = emptyMap(),
 )
 
 /**
@@ -115,6 +117,21 @@ object WatchStore {
             seriesMarked = d.seriesMarked - id,
         )
     }
+
+    // ---- watch later --------------------------------------------------------
+
+    fun isLater(id: String): Boolean = data.later.containsKey(id)
+
+    fun setLater(meta: MetaPreview, on: Boolean) = update { d ->
+        d.copy(later = if (on) d.later + (meta.id to info(meta)) else d.later - meta.id)
+    }
+
+    /** Watch later, newest first; things you've since finished drop off automatically. */
+    fun laterTitles(): List<MetaPreview> =
+        data.later.entries
+            .filter { (id, t) -> !isWatched(id, t.type) }
+            .sortedByDescending { it.value.at }
+            .map { (id, t) -> MetaPreview(id = id, type = t.type, name = t.name, poster = t.poster, genres = t.genres) }
 
     // ---- watched ------------------------------------------------------------
 

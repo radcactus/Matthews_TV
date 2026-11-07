@@ -11,6 +11,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -119,6 +122,10 @@ class VlcPlayerActivity : ComponentActivity() {
     private var scrubPos by mutableLongStateOf(0L)
     private var scrubJob: Job? = null
     private var resumeAfterScrub = false
+    /** Previewing a spot (after holding left/right); OK jumps there, Back cancels. */
+    private var previewMode by mutableStateOf(false)
+    private var previewStart = 0L
+    private var thumbReady by mutableStateOf(false)
 
     // ---- subtitles (Stremio-style: grouped by language, from the file and from addons)
     /** One choice in the subtitle menu. */
@@ -133,6 +140,11 @@ class VlcPlayerActivity : ComponentActivity() {
     private var embeddedSubs by mutableStateOf<List<Pair<Int, String>>>(emptyList())
     private var audioList by mutableStateOf<List<Pair<Int, String>>>(emptyList())
     private var currentAudio by mutableIntStateOf(-1)
+    private var audioDefaulted = false
+    private var eqBass by mutableIntStateOf(0)
+    private var eqMid by mutableIntStateOf(0)
+    private var eqTreble by mutableIntStateOf(0)
+    private var leveling by mutableStateOf(false)
     private var addonSubs by mutableStateOf<List<Pair<String, SubtitleFile>>>(emptyList())
     private var addonSubsLoaded by mutableStateOf(false)
     private var selectedSub by mutableStateOf<String?>(null)     // SubOption.key, null = off
@@ -172,11 +184,22 @@ class VlcPlayerActivity : ComponentActivity() {
         subColor = prefs.subtitleColor
         subBackground = prefs.subtitleBackground
         autoplay = prefs.autoplayNext
+        eqBass = prefs.eqBass
+        eqMid = prefs.eqMid
+        eqTreble = prefs.eqTreble
+        leveling = prefs.volumeLeveling
         if (target.nextVideoId != null) {
             lifecycleScope.launch { nextTarget = runCatching { buildNextTarget() }.getOrNull() }
         }
 
         videoLayout = VLCVideoLayout(this)
+        previewLayout = VLCVideoLayout(this)
+        // Keep VLC's picture sized to the screen. Without this, a pause, a seek,
+        // or a stream that switches the TV into HDR or changes audio format
+        // could leave the picture in a small box in the lower-left corner.
+        videoLayout.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or, ob ->
+            if (r - l != or - ol || b - t != ob - ot) refreshSurface()
+        }
         buildPlayer(target.startMs)
 
         setContent {
@@ -205,6 +228,19 @@ class VlcPlayerActivity : ComponentActivity() {
         }
     }
 
+    /** Tells VLC the real size of the screen area and re-fits the picture to it. */
+    private fun refreshSurface() {
+        if (!::mp.isInitialized || !attached) return
+        val w = videoLayout.width
+        val h = videoLayout.height
+        if (w <= 0 || h <= 0) return
+        runCatching {
+            mp.vlcVout.setWindowSize(w, h)
+            mp.setVideoScale(MediaPlayer.ScaleType.SURFACE_BEST_FIT)
+            mp.updateVideoSurfaces()
+        }
+    }
+
     /** Creates the VLC engine with the current subtitle style and loads the video at [startMs]. */
     private fun buildPlayer(startMs: Long) {
         // VLC sizes subtitles relative to the screen: a smaller number is bigger text.
@@ -212,7 +248,7 @@ class VlcPlayerActivity : ComponentActivity() {
         val color = if (subColor == 1) 0xFFFF00 else 0xFFFFFF
         libVlc = LibVLC(
             this,
-            arrayListOf(
+            ArrayList(listOf(
                 "--http-reconnect",
                 "--audio-time-stretch",
                 "--avcodec-skiploopfilter=1",   // smoother playback of heavy H.264 in software
@@ -221,13 +257,24 @@ class VlcPlayerActivity : ComponentActivity() {
                 "--freetype-outline-thickness=4",
                 "--freetype-background-color=0",
                 "--freetype-background-opacity=${if (subBackground) 170 else 0}",
-            ),
+            ) + if (leveling) listOf(
+                // Dynamic range compression: quieter explosions, louder dialogue.
+                "--audio-filter=compressor",
+                "--compressor-rms-peak=0.2",
+                "--compressor-attack=25",
+                "--compressor-release=100",
+                "--compressor-threshold=-20",
+                "--compressor-ratio=4",
+                "--compressor-knee=4.5",
+                "--compressor-makeup-gain=7",
+            ) else emptyList()),
         )
         mp = MediaPlayer(libVlc)
 
         val media = Media(libVlc, Uri.parse(url)).apply {
             setHWDecoderEnabled(true, false)
             addOption(":network-caching=2000")
+            addOption(":audio-language=en,eng,english")     // English audio by default
             if (startMs > 0) addOption(":start-time=${startMs / 1000.0}")
             headers.forEach { (k, v) ->
                 when (k.lowercase()) {
@@ -244,11 +291,16 @@ class VlcPlayerActivity : ComponentActivity() {
                 MediaPlayer.Event.Playing -> {
                     playing = true
                     everPlayed = true
+                    buffering = 100f
                     if (subDelayMs != 0L) mp.setSpuDelay(subDelayMs * 1000)
+                    applyEqualizer()
+                    videoLayout.postDelayed({ refreshSurface() }, 300)
                 }
-                MediaPlayer.Event.Paused, MediaPlayer.Event.Stopped -> playing = false
+                MediaPlayer.Event.Paused, MediaPlayer.Event.Stopped -> { playing = false; buffering = 100f }
+                MediaPlayer.Event.Vout -> refreshSurface()      // video output (re)created, e.g. HDR switch
                 MediaPlayer.Event.TimeChanged -> {
                     position = e.timeChanged
+                    if (buffering < 100f) buffering = 100f
                     onTick(position)
                 }
                 MediaPlayer.Event.LengthChanged -> length = e.lengthChanged
@@ -272,6 +324,7 @@ class VlcPlayerActivity : ComponentActivity() {
         if (!attached) {
             mp.attachViews(videoLayout, null, true, false)
             attached = true
+            refreshSurface()
             mp.play()
         }
     }
@@ -285,6 +338,7 @@ class VlcPlayerActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        releasePreviewPlayer()
         if (::mp.isInitialized) releasePlayer()
     }
 
@@ -362,6 +416,16 @@ class VlcPlayerActivity : ComponentActivity() {
         embeddedSubs = spu.filter { it.id !in slaveTracks.values }.map { it.id to it.name.orEmpty() }
         audioList = runCatching { mp.audioTracks }.getOrNull()?.filter { it.id != -1 }?.map { it.id to it.name.orEmpty() }.orEmpty()
         currentAudio = runCatching { mp.audioTrack }.getOrDefault(-1)
+        // Default to English audio when the file has it and something else was picked.
+        if (!audioDefaulted && audioList.isNotEmpty()) {
+            audioDefaulted = true
+            val currentLang = audioList.firstOrNull { it.first == currentAudio }?.let { embeddedLanguage(it.second) }
+            val english = audioList.firstOrNull { embeddedLanguage(it.second) == "English" }
+            if (english != null && currentLang != "English") {
+                mp.setAudioTrack(english.first)
+                currentAudio = english.first
+            }
+        }
         restoreSub?.let { key ->
             subOptions().firstOrNull { it.key == key }?.let { restoreSub = null; selectSub(it, remember = false) }
         }
@@ -555,11 +619,13 @@ class VlcPlayerActivity : ComponentActivity() {
         showControls()
     }
 
+    /** Quick skip. Resumes playback if paused, so the picture never sits frozen after a skip. */
     private fun seekBy(ms: Long) {
         val len = mp.length
         val t = (mp.time + ms).coerceIn(0L, if (len > 0) len - 1_000 else Long.MAX_VALUE)
         mp.setTime(t)
         position = t
+        if (!mp.isPlaying) mp.play()
     }
 
     private fun showControls() {
@@ -568,63 +634,191 @@ class VlcPlayerActivity : ComponentActivity() {
     }
 
     /**
-     * Left/right (and the remote's rewind/fast-forward keys): a press skips
-     * 10 seconds; holding scrubs at 2x, then 4x, 8x, 16x, 32x, 64x, and
-     * playback jumps to that spot when you let go.
+     * Left/right (and the remote's rewind/fast-forward keys):
+     * - a press skips 10 seconds;
+     * - holding opens the preview: it scrubs at 2x, then 4x, 8x, 16x, 32x, 64x
+     *   (true multiples of real time) with a thumbnail of where you are;
+     * - in the preview, presses move it 10 seconds, OK jumps there, Back cancels.
      */
     private fun handleSeekKey(event: KeyEvent, dir: Int): Boolean {
         when (event.action) {
-            KeyEvent.ACTION_DOWN -> {
-                if (event.repeatCount == 0) {
+            KeyEvent.ACTION_DOWN -> when {
+                event.repeatCount > 0 -> if (scrubSpeed == 0) startScrub(dir)
+                previewMode -> {
+                    scrubPos = clampPos(scrubPos + dir * 10_000L)
+                    requestThumbnail()
+                    interaction++
+                }
+                else -> {
                     seekBy(dir * 10_000L)
                     showControls()
-                } else if (scrubSpeed == 0) {
-                    startScrub(dir)
                 }
             }
-            KeyEvent.ACTION_UP -> if (scrubSpeed != 0) endScrub()
+            KeyEvent.ACTION_UP -> if (scrubSpeed != 0) stopScrubHold()
         }
         return true
     }
 
+    private fun clampPos(t: Long): Long = t.coerceIn(0L, if (length > 0) length - 1_000 else Long.MAX_VALUE)
+
     private fun startScrub(dir: Int) {
+        if (!previewMode) {
+            previewMode = true
+            scrubPos = mp.time
+            previewStart = scrubPos
+            resumeAfterScrub = mp.isPlaying
+            if (resumeAfterScrub) mp.pause()
+        }
         scrubDir = dir
-        scrubPos = mp.time
-        resumeAfterScrub = mp.isPlaying
-        if (resumeAfterScrub) mp.pause()
         scrubSpeed = SPEEDS[0]
         showControls()
         scrubJob?.cancel()
         scrubJob = lifecycleScope.launch {
             var level = 0
-            var atLevel = 0L
+            var levelStarted = android.os.SystemClock.uptimeMillis()
+            var last = levelStarted
             while (isActive) {
-                delay(100)
-                atLevel += 100
-                if (atLevel >= 1_500 && level < SPEEDS.lastIndex) {
+                delay(50)
+                val now = android.os.SystemClock.uptimeMillis()
+                // Move by the real time that passed times the speed, so 4x is truly 4x.
+                scrubPos = clampPos(scrubPos + dir * scrubSpeed * (now - last))
+                last = now
+                if (now - levelStarted >= 1_500 && level < SPEEDS.lastIndex) {
                     level++
-                    atLevel = 0
+                    levelStarted = now
                     scrubSpeed = SPEEDS[level]
                 }
-                val max = if (length > 0) length - 1_000 else Long.MAX_VALUE
-                scrubPos = (scrubPos + dir * scrubSpeed * 100L).coerceIn(0L, max)
                 interaction++
             }
         }
+        thumbnailLoop()
     }
 
-    private fun endScrub() {
+    /** Let go of the button: stop moving but stay in the preview until OK or Back. */
+    private fun stopScrubHold() {
         scrubJob?.cancel()
         scrubJob = null
+        scrubSpeed = 0
+        requestThumbnail()
+        interaction++
+    }
+
+    /** OK in the preview: jump there and play. */
+    private fun commitPreview() {
+        scrubJob?.cancel()
+        scrubSpeed = 0
+        previewMode = false
         mp.setTime(scrubPos)
         position = scrubPos
+        releasePreviewPlayer()
+        mp.play()
+        showControls()
+    }
+
+    /** Back in the preview: return to where you were. */
+    private fun cancelPreview() {
+        scrubJob?.cancel()
         scrubSpeed = 0
+        previewMode = false
+        releasePreviewPlayer()
         if (resumeAfterScrub) mp.play()
         interaction++
     }
 
+    // ---- preview thumbnails: a second, silent VLC player that shows the frame at the preview spot
+
+    private var previewPlayer: MediaPlayer? = null
+    private var previewLayout: VLCVideoLayout? = null
+    private var thumbTarget = -1L
+    private var thumbShown = -1L
+    private var thumbJob: Job? = null
+
+    private fun requestThumbnail() {
+        thumbTarget = scrubPos
+        if (thumbJob?.isActive != true) thumbnailLoop()
+    }
+
+    /** Keeps the thumbnail following the preview spot, at most a couple of updates a second. */
+    private fun thumbnailLoop() {
+        thumbJob?.cancel()
+        thumbJob = lifecycleScope.launch {
+            while (isActive && previewMode) {
+                val want = if (scrubSpeed > 0) scrubPos else thumbTarget.takeIf { it >= 0 } ?: scrubPos
+                if (kotlin.math.abs(want - thumbShown) > 2_000) {
+                    showThumbnailAt(want)
+                    thumbShown = want
+                    delay(if (scrubSpeed > 0) 700 else 400)
+                } else {
+                    delay(120)
+                }
+            }
+        }
+    }
+
+    private suspend fun showThumbnailAt(t: Long) {
+        val pp = previewPlayer ?: createPreviewPlayer() ?: return
+        runCatching {
+            pp.setTime(t)
+            if (!pp.isPlaying) pp.play()
+            delay(350)       // long enough to draw the frame at the new spot
+            pp.pause()
+            thumbReady = true
+        }
+    }
+
+    private fun createPreviewPlayer(): MediaPlayer? = runCatching {
+        val layout = previewLayout ?: VLCVideoLayout(this).also { previewLayout = it }
+        val pp = MediaPlayer(libVlc)
+        val media = Media(libVlc, Uri.parse(url)).apply {
+            setHWDecoderEnabled(true, false)
+            addOption(":no-audio")
+            addOption(":input-fast-seek")       // jump to the nearest keyframe: fast thumbnails
+            addOption(":network-caching=800")
+            headers.forEach { (k, v) ->
+                when (k.lowercase()) {
+                    "user-agent" -> addOption(":http-user-agent=$v")
+                    "referer", "referrer" -> addOption(":http-referrer=$v")
+                }
+            }
+        }
+        pp.setMedia(media)
+        media.release()
+        pp.attachViews(layout, null, false, true)
+        previewPlayer = pp
+        pp
+    }.getOrNull()
+
+    private fun releasePreviewPlayer() {
+        thumbJob?.cancel()
+        thumbReady = false
+        thumbShown = -1L
+        thumbTarget = -1L
+        previewPlayer?.let { pp ->
+            runCatching { pp.stop() }
+            runCatching { pp.detachViews() }
+            runCatching { pp.release() }
+        }
+        previewPlayer = null
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val down = event.action == KeyEvent.ACTION_DOWN
+        if (previewMode) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> return handleSeekKey(event, -1)
+                KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> return handleSeekKey(event, 1)
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                    if (down && event.repeatCount == 0) commitPreview()
+                    return true
+                }
+                KeyEvent.KEYCODE_BACK -> {
+                    if (down) cancelPreview()
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> return true
+            }
+        }
         when (event.keyCode) {
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE -> {
                 if (down && event.repeatCount == 0) { togglePlay(); showControls() }
@@ -683,7 +877,7 @@ class VlcPlayerActivity : ComponentActivity() {
         // Hide the controls after 5 seconds without a key press while playing.
         // While paused they stay up as the pause menu.
         LaunchedEffect(interaction, controlsVisible, playing, picker, scrubSpeed) {
-            if (controlsVisible && playing && picker == null && scrubSpeed == 0) {
+            if (controlsVisible && playing && picker == null && scrubSpeed == 0 && !previewMode) {
                 delay(5_000)
                 controlsVisible = false
             }
@@ -735,6 +929,7 @@ class VlcPlayerActivity : ComponentActivity() {
             when (picker) {
                 "subs" -> SubtitlePanel()
                 "style" -> SubtitlePanel(styleOnly = true)
+                "sound" -> SoundPanel()
                 "audio" -> AudioPicker()
             }
 
@@ -753,37 +948,6 @@ class VlcPlayerActivity : ComponentActivity() {
                 )
             }
         }
-    }
-
-    /** A quick audio + subtitle combination, like the chips under Netflix's progress bar. */
-    private data class LangChip(val label: String, val audioId: Int, val sub: SubOption?)
-
-    private fun languageChips(): List<LangChip> {
-        val opts = subOptions()
-        fun bestSub(lang: String) = opts.firstOrNull { it.language.equals(lang, true) && it.trackId != null }
-            ?: opts.firstOrNull { it.language.equals(lang, true) }
-        val wanted = Repo.prefs.subtitleLanguage ?: Locale.getDefault().getDisplayLanguage(Locale.ENGLISH).ifBlank { "English" }
-        val sub = bestSub(wanted) ?: bestSub("English")
-        val audios = audioList.ifEmpty { listOf(-1 to "") }
-        val chips = mutableListOf<LangChip>()
-        for ((id, name) in audios.take(3)) {
-            val lang = when {
-                name.isBlank() -> "Original audio"
-                else -> embeddedLanguage(name).takeIf { it != "Other" } ?: name.substringBefore(" - ").ifBlank { "Track $id" }
-            }
-            chips += LangChip(lang, id, null)
-            if (sub != null) chips += LangChip("$lang with Subtitles", id, sub)
-        }
-        return chips.distinctBy { it.label }.take(4)
-    }
-
-    private fun applyChip(c: LangChip) {
-        if (c.audioId >= 0) {
-            mp.setAudioTrack(c.audioId)
-            currentAudio = c.audioId
-        }
-        selectSub(c.sub)
-        interaction++
     }
 
     /** "S2: E1 \"Last Chance for a Slow Dance\"" for episodes. */
@@ -839,8 +1003,9 @@ class VlcPlayerActivity : ComponentActivity() {
 
             // Bottom: play state, times, progress, languages.
             Column(Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(start = 48.dp, end = 48.dp, bottom = 36.dp)) {
-                val shown = if (scrubSpeed > 0) scrubPos else position
+                val shown = if (previewMode) scrubPos else position
                 val frac = if (length > 0) (shown.toFloat() / length).coerceIn(0f, 1f) else 0f
+                if (previewMode) PreviewThumbnail(frac, shown)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         Modifier
@@ -859,7 +1024,7 @@ class VlcPlayerActivity : ComponentActivity() {
                         clock(shown),
                         fontSize = 15.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = if (scrubSpeed > 0) Accent else Color.White,
+                        color = if (previewMode) Accent else Color.White,
                         modifier = Modifier.padding(start = 22.dp, end = 16.dp),
                     )
                     Box(
@@ -890,34 +1055,43 @@ class VlcPlayerActivity : ComponentActivity() {
                         modifier = Modifier.padding(start = 16.dp),
                     )
                 }
-                // Quick language choices, then the full menus.
-                Row(
-                    Modifier.padding(start = 78.dp, top = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    languageChips().forEach { c ->
-                        val selected = (c.audioId < 0 || c.audioId == currentAudio) && c.sub?.key == selectedSub
-                        LangPill((if (selected) "✓  " else "") + c.label, selected, onClick = { applyChip(c) })
-                    }
-                    LangPill("Other…", false, onClick = { picker = "subs" })
-                    Surface(
-                        onClick = { picker = "style" },
-                        modifier = Modifier.size(40.dp),
-                        shape = ClickableSurfaceDefaults.shape(shape = CircleShape),
-                        colors = ClickableSurfaceDefaults.colors(
-                            containerColor = Color(0x40FFFFFF),
-                            contentColor = Color.White,
-                            focusedContainerColor = Color.White,
-                            focusedContentColor = Color.Black,
-                        ),
-                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.1f),
-                    ) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Icon(PlayerIcons.Settings, contentDescription = "Subtitle appearance", modifier = Modifier.size(22.dp))
-                        }
-                    }
+                // One button for audio, subtitles and sound.
+                Row(Modifier.padding(start = 78.dp, top = 16.dp)) {
+                    LangPill("Audio & Subtitles", false, onClick = { picker = "audio" })
                 }
+            }
+        }
+    }
+
+    /** Frame at the preview spot, above the progress bar where that spot is. */
+    @Composable
+    private fun PreviewThumbnail(frac: Float, at: Long) {
+        BoxWithConstraints(Modifier.fillMaxWidth().height(232.dp)) {
+            val thumbW = 320.dp
+            // The bar runs from after the play button and time to before the remaining time.
+            val barStart = 154.dp
+            val barWidth = maxWidth - barStart - 80.dp
+            val x = (barStart + barWidth * frac - thumbW / 2).coerceIn(0.dp, maxWidth - thumbW)
+            Column(Modifier.offset(x = x), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(
+                    Modifier
+                        .width(thumbW)
+                        .height(180.dp)
+                        .background(Color.Black, RoundedCornerShape(8.dp))
+                        .border(2.dp, Color.White, RoundedCornerShape(8.dp))
+                        .padding(2.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    previewLayout?.let { layout -> AndroidView(factory = { layout }, modifier = Modifier.fillMaxSize()) }
+                    if (!thumbReady) Text("Loading preview…", color = TextDim, fontSize = 13.sp)
+                }
+                Text(
+                    clock(at) + if (scrubSpeed > 0) "   ${if (scrubDir < 0) "«" else "»"} ${scrubSpeed}x" else "",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+                Text("OK: jump here   ·   Back: cancel", color = TextDim, fontSize = 12.sp)
             }
         }
     }
@@ -1053,11 +1227,7 @@ class VlcPlayerActivity : ComponentActivity() {
                     .background(Panel)
                     .padding(horizontal = 28.dp, vertical = 24.dp),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (styleOnly) "Subtitle appearance" else "Subtitles", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.weight(1f))
-                    if (!styleOnly) Pill("Audio tracks", false, { picker = "audio" })
-                }
+                PanelTabs()
                 if (!styleOnly && !addonSubsLoaded) {
                     Text("Searching your subtitle addons…", color = TextDim, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
                 }
@@ -1149,6 +1319,114 @@ class VlcPlayerActivity : ComponentActivity() {
         }
     }
 
+    /** Tabs across the top of the Audio & Subtitles menu. */
+    @Composable
+    private fun PanelTabs() {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            listOf("audio" to "Audio", "subs" to "Subtitles", "style" to "Subtitle style", "sound" to "Sound").forEach { (k, label) ->
+                Pill(label, picker == k, { picker = k })
+            }
+        }
+    }
+
+    /**
+     * Sound: a simple equalizer (bass, voices, treble) with presets, plus
+     * volume leveling that evens out loud and quiet parts.
+     */
+    @Composable
+    private fun SoundPanel() {
+        val first = remember { FocusRequester() }
+        LaunchedEffect(Unit) { delay(60); runCatching { first.requestFocus() } }
+        Box(Modifier.fillMaxSize().background(Color(0x99000000)), contentAlignment = Alignment.CenterEnd) {
+            Column(
+                Modifier
+                    .width(700.dp)
+                    .fillMaxHeight()
+                    .background(Panel)
+                    .padding(horizontal = 28.dp, vertical = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                PanelTabs()
+                Text("Presets", color = TextDim, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    EQ_PRESETS.forEachIndexed { i, (name, v) ->
+                        val active = eqBass == v[0] && eqMid == v[1] && eqTreble == v[2]
+                        Pill(name, active, { setEq(v[0], v[1], v[2]) }, if (i == 0) Modifier.focusRequester(first) else Modifier)
+                    }
+                }
+                EqRow("Bass (lows)", eqBass) { setEq(it, eqMid, eqTreble) }
+                EqRow("Voices (mids)", eqMid) { setEq(eqBass, it, eqTreble) }
+                EqRow("Treble (highs)", eqTreble) { setEq(eqBass, eqMid, it) }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 8.dp)) {
+                    Text("Volume leveling", fontSize = 15.sp, modifier = Modifier.width(150.dp))
+                    Pill("Off", !leveling, { if (leveling) setLeveling(false) })
+                    Pill("On", leveling, { if (!leveling) setLeveling(true) })
+                }
+                Text(
+                    "Leveling evens out loud explosions and quiet dialogue. Turning it on or off briefly restarts the video at the same spot.",
+                    color = TextFaint,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun EqRow(label: String, value: Int, onChange: (Int) -> Unit) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(label, fontSize = 15.sp, modifier = Modifier.width(150.dp))
+            Pill("−", false, { onChange((value - 2).coerceAtLeast(-12)) })
+            // A small bar showing the level from -12 to +12 dB.
+            Box(Modifier.width(220.dp).height(8.dp).background(Color(0x33FFFFFF), RoundedCornerShape(4.dp))) {
+                val f = (value + 12) / 24f
+                Box(Modifier.fillMaxWidth(f.coerceIn(0.02f, 1f)).height(8.dp).background(Accent, RoundedCornerShape(4.dp)))
+            }
+            Pill("+", false, { onChange((value + 2).coerceAtMost(12)) })
+            Text("${if (value > 0) "+" else ""}$value dB", fontSize = 14.sp, color = TextDim, modifier = Modifier.width(64.dp))
+        }
+    }
+
+    private fun setEq(bass: Int, mid: Int, treble: Int) {
+        eqBass = bass; eqMid = mid; eqTreble = treble
+        Repo.prefs.eqBass = bass
+        Repo.prefs.eqMid = mid
+        Repo.prefs.eqTreble = treble
+        applyEqualizer()
+    }
+
+    private fun setLeveling(on: Boolean) {
+        leveling = on
+        Repo.prefs.volumeLeveling = on
+        restartWithNewSubtitleStyle()
+    }
+
+    /** Spreads bass / voices / treble across VLC's 10-band equalizer. */
+    private fun applyEqualizer() {
+        if (!::mp.isInitialized) return
+        runCatching {
+            if (eqBass == 0 && eqMid == 0 && eqTreble == 0) {
+                mp.setEqualizer(null)
+                return
+            }
+            val eq = MediaPlayer.Equalizer.create()
+            for (i in 0 until MediaPlayer.Equalizer.getBandCount()) {
+                val f = MediaPlayer.Equalizer.getBandFrequency(i)
+                val gain = when {
+                    f < 100f -> eqBass.toFloat()
+                    f < 250f -> eqBass * 0.7f
+                    f < 500f -> eqBass * 0.3f + eqMid * 0.5f
+                    f < 4_000f -> eqMid.toFloat()
+                    f < 8_000f -> eqMid * 0.3f + eqTreble * 0.7f
+                    else -> eqTreble.toFloat()
+                }
+                eq.setAmp(i, gain)
+            }
+            // Leave headroom when anything is boosted so it doesn't distort.
+            eq.setPreAmp(-maxOf(0, eqBass, eqMid, eqTreble).toFloat())
+            mp.setEqualizer(eq)
+        }
+    }
+
     @Composable
     private fun SubRow(
         text: String,
@@ -1195,13 +1473,14 @@ class VlcPlayerActivity : ComponentActivity() {
         Box(Modifier.fillMaxSize().background(Color(0x99000000)), contentAlignment = Alignment.CenterEnd) {
             Column(
                 Modifier
-                    .width(440.dp)
+                    .width(700.dp)
                     .fillMaxHeight()
                     .background(Panel)
-                    .padding(28.dp),
+                    .padding(horizontal = 28.dp, vertical = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text("Audio", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                PanelTabs()
+                Text("Audio language", color = TextDim, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
                 if (tracks.isEmpty()) Text("No other audio tracks in this video.", color = TextDim)
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     items(tracks, key = { it.first }) { (id, name) ->
@@ -1231,6 +1510,15 @@ class VlcPlayerActivity : ComponentActivity() {
     companion object {
         private val SPEEDS = intArrayOf(2, 4, 8, 16, 32, 64)
         private const val COUNTDOWN_SECONDS = 15
+
+        /** Name to (bass, voices, treble) in dB. */
+        private val EQ_PRESETS = listOf(
+            "Flat" to intArrayOf(0, 0, 0),
+            "Balanced" to intArrayOf(-4, 2, -4),
+            "Clear dialogue" to intArrayOf(-6, 4, -2),
+            "Night" to intArrayOf(-8, 4, -6),
+            "More bass" to intArrayOf(4, 0, 0),
+        )
         private const val EXTRA_URL = "url"
         private const val EXTRA_TARGET = "target"
         private const val EXTRA_HEADER_KEYS = "hk"

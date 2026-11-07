@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.runtime.Composable
@@ -239,6 +240,15 @@ fun DetailScreen(seed: MetaPreview, onOpen: (MetaPreview) -> Unit) {
                                 if (myRating != null) RatingIcon(myRating, Modifier.size(18.dp))
                                 else Icon(Icons.Filled.Check, contentDescription = null)
                             },
+                        )
+                        val later = WatchStore.isLater(id)
+                        ActionButton(
+                            text = if (later) "On Watch later" else "Watch later",
+                            onClick = {
+                                WatchStore.setLater(m?.toPreview() ?: seed, !later)
+                                Repo.refreshPersonalRows()
+                            },
+                            leading = { Icon(if (later) Icons.Filled.Check else Icons.Filled.Add, contentDescription = null) },
                         )
                         ActionButton(
                             text = "Open in Stremio",

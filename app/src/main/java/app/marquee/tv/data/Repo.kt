@@ -53,6 +53,7 @@ object Repo {
 
     // Slot order on the home screen.
     private const val SLOT_CONTINUE = 0
+    private const val SLOT_LATER = 2
     const val SLOT_HOLIDAY = 5
     const val SLOT_PICKS = 10
     const val SLOT_BECAUSE = 20      // 20..29
@@ -64,7 +65,7 @@ object Repo {
     private const val SLOT_CATALOGS = 1_000
 
     /** Rows that may repeat titles shown elsewhere (they're your own lists). */
-    private val exemptFromDedupe = setOf("continue", "library", "watched")
+    private val exemptFromDedupe = setOf("continue", "later", "library", "watched")
 
     private lateinit var homeFile: java.io.File
     @Volatile private var firstLoadDone = false
@@ -81,6 +82,13 @@ object Repo {
         progress.value = prefs.loadProgress()
         prefs.addonsJson?.let { json ->
             runCatching { addons.value = parseCollection(Http.json.parseToJsonElement(json) as JsonArray) }
+        }
+        // While the app is open, check every 30 minutes (catches midnight and long sessions).
+        scope.launch {
+            while (true) {
+                delay(30 * 60_000L)
+                refreshIfStale()
+            }
         }
         scope.launch {
             // Show last time's Home straight away while fresh rows load.
@@ -117,9 +125,25 @@ object Repo {
         refresh()
     }
 
-    fun refresh() {
+    @Volatile private var lastRefresh = 0L
+    @Volatile private var lastRefreshDay = -1
+
+    private fun dayOfYear() = java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_YEAR)
+
+    /**
+     * Refreshes when Home is out of date: a new day (new themed rows, holiday
+     * row, picks) or more than 3 hours since the last refresh.
+     */
+    fun refreshIfStale() {
+        val stale = System.currentTimeMillis() - lastRefresh > 3 * 60 * 60_000L || dayOfYear() != lastRefreshDay
+        if (stale && refreshJob?.isActive != true) refresh()
+    }
+
+    fun refresh(): Job {
+        lastRefresh = System.currentTimeMillis()
+        lastRefreshDay = dayOfYear()
         refreshJob?.cancel()
-        refreshJob = scope.launch {
+        val job = scope.launch {
             loading.value = true
             error.value = null
             try {
@@ -146,6 +170,8 @@ object Repo {
             loadHome()
             loading.value = false
         }
+        refreshJob = job
+        return job
     }
 
     private fun parseCollection(raw: JsonArray): List<Addon> = raw.mapNotNull { el ->
@@ -285,9 +311,14 @@ object Repo {
     /** Rebuilds the rows that depend on what you've watched and rated. */
     fun refreshPersonalRows() {
         putHomeRow(SLOT_CONTINUE, continueWatching())
+        putHomeRow(SLOT_LATER, watchLater())
         putHomeRow(SLOT_WATCHED, watchAgain())
+        putHomeRow(SLOT_LATER, watchLater())
         scope.launch { runCatching { Recommender.build() }.onFailure { Log.w(TAG, "recs failed", it) } }
     }
+
+    private fun watchLater() =
+        HomeRow("later", "Watch later", WatchStore.laterTitles().take(40).map { RowItem(it) })
 
     private fun watchAgain() =
         HomeRow("watched", "Watch again", WatchStore.watchedTitles().take(40).map { RowItem(it) })

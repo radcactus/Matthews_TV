@@ -41,6 +41,20 @@ class Prefs(context: Context) {
             ?: "vlc"
         set(v) = sp.edit().putString("playerChoice", v).apply()
 
+    // ---- sound: equalizer in dB, default "Balanced" (softer lows and highs, clearer voices)
+    var eqBass: Int
+        get() = sp.getInt("eqBass", -4)
+        set(v) = sp.edit().putInt("eqBass", v).apply()
+    var eqMid: Int
+        get() = sp.getInt("eqMid", 2)
+        set(v) = sp.edit().putInt("eqMid", v).apply()
+    var eqTreble: Int
+        get() = sp.getInt("eqTreble", -4)
+        set(v) = sp.edit().putInt("eqTreble", v).apply()
+    var volumeLeveling: Boolean
+        get() = sp.getBoolean("volumeLeveling", false)
+        set(v) = sp.edit().putBoolean("volumeLeveling", v).apply()
+
     /** Play the next episode automatically when the credits start. */
     var autoplayNext: Boolean
         get() = sp.getBoolean("autoplayNext", true)

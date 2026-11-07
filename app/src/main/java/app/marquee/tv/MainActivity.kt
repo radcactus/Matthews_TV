@@ -23,6 +23,7 @@ class MarqueeApplication : Application(), SingletonImageLoader.Factory {
         super.onCreate()
         Http.init(this)
         Repo.init(this)
+        runCatching { app.marquee.tv.data.RefreshWorker.schedule(this) }
     }
 
     /** Posters and backdrops: shared connections, a quarter of memory, 300 MB on disk. */
@@ -46,6 +47,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             MarqueeTheme { MarqueeApp() }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Coming back after a while (or on a new day): bring Home up to date.
+        Repo.refreshIfStale()
     }
 
     override fun onNewIntent(intent: Intent) {

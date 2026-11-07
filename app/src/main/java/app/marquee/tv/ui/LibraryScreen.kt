@@ -34,7 +34,9 @@ fun LibraryScreen(onOpen: (MetaPreview) -> Unit) {
 
     val watchVersion = WatchStore.version
     val items: List<MetaPreview> = remember(library, filter, sort, watchVersion) {
-        if (filter == "done") {
+        if (filter == "later") {
+            WatchStore.laterTitles().let { list -> if (sort == "az") list.sortedBy { it.name.lowercase() } else list }
+        } else if (filter == "done") {
             // Everything you've fully watched, best rated first.
             WatchStore.watchedTitles().let { list -> if (sort == "az") list.sortedBy { it.name.lowercase() } else list }
         } else {
@@ -56,13 +58,14 @@ fun LibraryScreen(onOpen: (MetaPreview) -> Unit) {
             Pill("All", filter == "all", { filter = "all" }, Modifier.padding(start = 40.dp))
             Pill("Movies", filter == "movie", { filter = "movie" })
             Pill("Series", filter == "series", { filter = "series" })
+            Pill("Watch later", filter == "later", { filter = "later" })
             Pill("Watched", filter == "done", { filter = "done" })
             Pill("Recently added", sort == "recent", { sort = "recent" }, Modifier.padding(start = 24.dp))
             Pill("Recently watched", sort == "watched", { sort = "watched" })
             Pill("A–Z", sort == "az", { sort = "az" })
         }
         when {
-            !signedIn && filter != "done" -> Centered("Sign in with your Stremio account in Settings to see your library.")
+            !signedIn && filter != "done" && filter != "later" -> Centered("Sign in with your Stremio account in Settings to see your library.")
             items.isEmpty() -> Centered("Nothing here yet.")
             else -> LazyVerticalGrid(
                 columns = GridCells.Adaptive(PosterWidth + 14.dp),

@@ -2,6 +2,8 @@ package app.marquee.tv.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -57,16 +59,30 @@ fun SearchScreen(onOpen: (MetaPreview) -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().padding(top = 28.dp)) {
-        TvTextField(
-            value = query,
-            onValueChange = { query = it },
-            placeholder = "Search movies and series",
-            imeAction = ImeAction.Search,
-            modifier = Modifier
-                .padding(horizontal = 40.dp)
-                .fillMaxWidth(0.6f)
-                .focusRequester(field),
-        )
+        Row(
+            Modifier.padding(horizontal = 40.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            TvTextField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = "Search movies and series",
+                imeAction = ImeAction.Search,
+                modifier = Modifier
+                    .fillMaxWidth(0.6f)
+                    .focusRequester(field),
+            )
+            // Empties the box and the results, ready for a new search.
+            if (query.isNotEmpty()) {
+                ActionButton("Clear", onClick = {
+                    query = ""
+                    searched = ""
+                    rows.clear()
+                    runCatching { field.requestFocus() }
+                })
+            }
+        }
         when {
             query.trim().length < 2 -> Centered("Type at least two letters.\nPress OK on the box to open the keyboard.")
             rows.isEmpty() && searching -> Centered("Searching your addons…")
